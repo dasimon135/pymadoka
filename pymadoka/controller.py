@@ -13,6 +13,7 @@ from pymadoka.features.power import PowerState
 from pymadoka.features.setpoint import SetPoint
 from pymadoka.features.temperatures import Temperatures
 from pymadoka.features.clean_filter import CleanFilterIndicator,ResetCleanFilterTimer
+from pymadoka.features.eye_brightness import EyeBrightness
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class Controller:
         self.temperatures = Temperatures(self.connection)
         self.clean_filter_indicator = CleanFilterIndicator(self.connection)
         self.reset_clean_filter_timer = ResetCleanFilterTimer(self.connection)
+        self.eye_brightness = EyeBrightness(self.connection)
         
 
     async def start(self):
