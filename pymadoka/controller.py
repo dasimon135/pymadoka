@@ -33,22 +33,23 @@ class Controller:
         set_point (Feature): Feature used to control the fan speed
         clean_filter_indicator (Feature): Feature used to control the fan speed
     """
-    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True):
+    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None):
         """Inits the controller with the device address.
 
         Args:
-            address (str): MAC address of the device  
+            address (str): MAC address of the device
             adapter (str): Bluetooth adapter for the connection
+            hass: Home Assistant instance (enables bleak_retry_connector path)
+            name (str): User-friendly display name for the device
         """
 
-     
         if adapter is None:
             adapter = "hci0"
-        
+
         self.status = {}
         self.info = {}
-        self.connection = Connection(address,adapter = adapter, reconnect=reconnect)
-        
+        self.connection = Connection(address, adapter=adapter, reconnect=reconnect, hass=hass, name=name)
+
         self.fan_speed = FanSpeed(self.connection)
         self.operation_mode = OperationMode(self.connection)
         self.power_state = PowerState(self.connection)
@@ -57,32 +58,32 @@ class Controller:
         self.clean_filter_indicator = CleanFilterIndicator(self.connection)
         self.reset_clean_filter_timer = ResetCleanFilterTimer(self.connection)
         self.eye_brightness = EyeBrightness(self.connection)
-        
+
 
     async def start(self):
         """Start the connection to the device.
-        """        
+        """
         await self.connection.start()
-       
-    
+
+
     async def stop(self):
         """Stop the connection.
-        """ 
+        """
         await self.connection.cleanup()
-    
+
     async def update(self):
         """Iterate over all the features and query their status.
-        """ 
-        
+        """
+
         for var in vars(self).values():
-            if isinstance(var,Feature): 
+            if isinstance(var,Feature):
                 try:
-                    # Small delay to avoid DBUS errors produced when calls are too quick
-                    await asyncio.sleep(0.3)
                     await var.query()
                 except NotImplementedException as e:
                     if not isinstance(var, ResetCleanFilterTimer):
-                        raise e                 
+                        raise e
+                except asyncio.TimeoutError:
+                    logger.warning(f"Query timed out for {var.__class__.__name__}, skipping")
                 except ConnectionAbortedError as e:
                     logger.debug(f"Connection aborted: {str(e)}")
                     raise e
@@ -91,8 +92,8 @@ class Controller:
                     raise e
                 except Exception as e:
                     logger.error(f"Failed to update {var.__class__.__name__}: {str(e)}")
-        
-    
+
+
     def refresh_status(self) -> Dict[str,Union[int,str,bool,dict,Enum]]:
         """Collect the status from all the features into a single status dictionary with basic types.
 
@@ -100,13 +101,13 @@ class Controller:
             dict[str,Union[int,str,bool,dict,Enum]]: Dictionary with the status of each feature represented with basic types
         """
         for k,v in vars(self).items():
-            if isinstance(v,Feature): 
+            if isinstance(v,Feature):
                 if v.status is not None:
                     self.status[k] = vars(v.status)
-            
+
         return self.status
 
-    
+
     async def read_info(self) -> Dict[str,str]:
         """Reads the device info (Hardware revision, Software revision, Model, Manufacturer, etc)
         Returns:
@@ -114,8 +115,3 @@ class Controller:
         """
         self.info = await self.connection.read_info()
         return self.info
-       
-
-
-
-    
