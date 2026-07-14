@@ -72,16 +72,18 @@ class Connection(TransportDelegate):
         self.current_future = None
         self.requests = {}
         self._is_starting = False
+        self._closing = False
         self._operation_lock = asyncio.Lock()
         self._retry_delay = 5.0
 
     def on_disconnect(self, client: BleakClient):
         self.connection_status = ConnectionStatus.DISCONNECTED
         logger.info(f"Disconnected {self.address}")
-        if self.reconnect and not self._is_starting:
+        if self.reconnect and not self._is_starting and not self._closing:
             asyncio.create_task(self.start())
 
     async def cleanup(self):
+        self._closing = True
         self.reconnect = False
         if self.client:
             try:
@@ -100,6 +102,9 @@ class Connection(TransportDelegate):
         self.connection_status = ConnectionStatus.CONNECTING
         try:
             while self.connection_status not in (ConnectionStatus.CONNECTED, ConnectionStatus.ABORTED):
+                if self._closing:
+                    # cleanup() was called: stop any in-flight (re)connect loop.
+                    break
                 try:
                     if self.hass is not None:
                         await self._connect_via_ha()
@@ -224,9 +229,11 @@ class Connection(TransportDelegate):
                     logger.debug(f"CMD {cmd_id}. Chunk #{chunknum+1}/{len(chunks)} sent with size {len(chunk)} bytes")
                     sent += 1
                     break
-                except CancelledError as e:
-                    logger.debug(f"Send command failed. Retrying ({i}/{SEND_MAX_TRIES}) for chunk #{chunknum} : {str(e)}", exc_info=e)
-                    await asyncio.sleep(1)
+                except CancelledError:
+                    # Propagate task cancellation instead of retrying: retrying
+                    # here would un-cancel the caller (e.g. entry unload).
+                    cmd_response.cancel()
+                    raise
                 except Exception as e:
                     logger.debug(f"Send command failed. Retrying ({i}/{SEND_MAX_TRIES}) for chunk #{chunknum} : {str(e)}")
                     await asyncio.sleep(1)

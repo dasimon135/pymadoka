@@ -1,12 +1,17 @@
 import asyncio
 from asyncio.exceptions import CancelledError
 import logging
-import click
 import json
-import yaml
 
-import paho.mqtt.client as mqtt
-from paho.mqtt import MQTTException
+try:
+    import click
+    import yaml
+    import paho.mqtt.client as mqtt
+    from paho.mqtt import MQTTException
+except ImportError as import_error:  # optional [mqtt] extra not installed
+    raise SystemExit(
+        "The pymadoka-mqtt bridge needs the [mqtt] extra: pip install 'pymadoka[mqtt]'"
+    ) from import_error
 from typing import Any, Dict, List
 from dataclasses import dataclass, field
 from functools import wraps

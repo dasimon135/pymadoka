@@ -38,11 +38,14 @@ class SetPointStatus(FeatureStatus):
     
     def __init__(self,cooling_set_point:int, heating_set_point:int):
         """Inits the status with the set points
-        
-        Args: 
+
+        Args:
             cooling_set_point (int): Cooling set point
             heating_set_point (int): Heating set point
         """
+        # Raw params captured on parse; echoed back on serialize so an update
+        # does not clobber device-side settings (range mode, limits).
+        self._raw_values = {}
         self.cooling_set_point = cooling_set_point
         self.heating_set_point = heating_set_point
         self.range_enabled = 0
@@ -63,7 +66,8 @@ class SetPointStatus(FeatureStatus):
         
     def set_values(self, values:Dict[str,bytearray]):
         """See base class."""
-        
+
+        self._raw_values = {key: bytes(value) for key, value in values.items()}
         self.cooling_set_point = round(int.from_bytes(values[self.COOLING_IDX[0]],"big")/128.0)
         self.heating_set_point = round(int.from_bytes(values[self.HEATING_IDX[0]],"big")/128.0)
         self.range_enabled = round(int.from_bytes(values[self.RANGE_ENABLED_IDX[0]],"big")/128.0)
@@ -84,7 +88,13 @@ class SetPointStatus(FeatureStatus):
         
         
     def get_values(self) -> Dict[str,bytearray]:
-        """See base class."""
+        """See base class.
+
+        A freshly built status serializes the legacy default payload (used for
+        queries). A status parsed from the device echoes the device's own raw
+        params back, with only the set points replaced, so updating a set point
+        does not reset range mode or the configured limits.
+        """
         values = {}
         values[self.COOLING_IDX[0]] = (self.cooling_set_point*128).to_bytes(self.COOLING_IDX[1],"big")
         values[self.HEATING_IDX[0]] = (self.heating_set_point*128).to_bytes(self.HEATING_IDX[1],"big")
@@ -103,6 +113,12 @@ class SetPointStatus(FeatureStatus):
         values[self.HEATING_UPPERLIMIT_IDX[0]] = (0).to_bytes(self.HEATING_UPPERLIMIT_IDX[1],"big")
         values[self.COOLING_UPPERLIMIT_SYMBOL_IDX[0]] = (0).to_bytes(self.COOLING_UPPERLIMIT_SYMBOL_IDX[1],"big")
         values[self.HEATING_UPPERLIMIT_SYMBOL_IDX[0]] = (0).to_bytes(self.HEATING_UPPERLIMIT_SYMBOL_IDX[1],"big")
+
+        if self._raw_values:
+            for key, raw in self._raw_values.items():
+                if key not in (self.COOLING_IDX[0], self.HEATING_IDX[0]):
+                    values[key] = raw
+
         return values
 
 class SetPoint(Feature):
