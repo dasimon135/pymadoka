@@ -138,7 +138,9 @@ class Connection(TransportDelegate):
             await asyncio.sleep(5.0)
             return
 
-        if ble_device.name:
+        # Only adopt the advertised name when the caller did not provide one
+        # (self.name defaults to the address), so a user-chosen name survives.
+        if ble_device.name and self.name == self.address:
             self.name = ble_device.name
 
         try:
@@ -149,9 +151,26 @@ class Connection(TransportDelegate):
                 disconnected_callback=self.on_disconnect,
                 max_attempts=3,
             )
+
+            # Establish the authenticated bond BEFORE any GATT operation.
+            # Otherwise bleak connects unencrypted and only pairs reactively
+            # when a read hits "Insufficient authentication" — which the BRC1H
+            # handles poorly, dropping the link mid-exchange. Best-effort: some
+            # backends bond implicitly and pair() is a no-op or unsupported.
+            try:
+                await asyncio.wait_for(self.client.pair(), timeout=15.0)
+            except Exception as pair_err:  # noqa: BLE001
+                logger.debug(f"pair() skipped for {self.address}: {pair_err}")
+
+            await self.client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
+
+            # Let the bonded link and notification subscription settle before
+            # the first command; proxied notifications can otherwise be dropped
+            # and the chunked response fails to reassemble.
+            await asyncio.sleep(1.5)
+
             self.connection_status = ConnectionStatus.CONNECTED
             self._retry_delay = 5.0  # reset backoff on successful connect
-            await self.client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
             logger.info(f"Connected to {self.address} ({self.name}) via bleak_retry_connector")
         except Exception as e:
             logger.error(f"Failed to connect to {self.address}: {e}")

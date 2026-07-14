@@ -71,27 +71,48 @@ class Controller:
         """
         await self.connection.cleanup()
 
-    async def update(self):
+    async def update(self, query_retries: int = 2):
         """Iterate over all the features and query their status.
+
+        A single feature query can fail transiently (a chunked notification
+        response that could not be reassembled, or a short timeout), especially
+        when the link is relayed through a BLE proxy. Such a failure is retried
+        a few times per feature and, if it still fails, that feature is skipped
+        rather than aborting the whole poll — so the rest of the features (and
+        the entities that depend on them) still update. Only a dead link
+        (ConnectionAbortedError) stops the poll.
         """
 
         for var in vars(self).values():
-            if isinstance(var,Feature):
+            if not isinstance(var, Feature):
+                continue
+
+            for attempt in range(query_retries + 1):
                 try:
                     await var.query()
+                    break
                 except NotImplementedException as e:
                     if not isinstance(var, ResetCleanFilterTimer):
                         raise e
-                except asyncio.TimeoutError:
-                    logger.warning(f"Query timed out for {var.__class__.__name__}, skipping")
+                    break
                 except ConnectionAbortedError as e:
                     logger.debug(f"Connection aborted: {str(e)}")
                     raise e
-                except ConnectionException as e:
-                    logger.debug(f"Connection error: {str(e)}")
-                    raise e
+                except (asyncio.TimeoutError, ConnectionException) as e:
+                    if attempt < query_retries:
+                        logger.debug(
+                            f"Query attempt {attempt + 1}/{query_retries + 1} failed "
+                            f"for {var.__class__.__name__}, retrying: {str(e)}"
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    logger.warning(
+                        f"Query failed for {var.__class__.__name__} after "
+                        f"{query_retries + 1} attempts, skipping: {str(e)}"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to update {var.__class__.__name__}: {str(e)}")
+                    break
 
 
     def refresh_status(self) -> Dict[str,Union[int,str,bool,dict,Enum]]:
