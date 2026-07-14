@@ -2,16 +2,16 @@ import asyncio
 from asyncio.exceptions import CancelledError
 import logging
 
-import subprocess
-import sys
 from enum import Enum
 
 from bleak import BleakClient, BleakScanner
-discover = BleakScanner.discover
 from typing import Dict
 
 from pymadoka.transport import Transport, TransportDelegate
 from pymadoka.consts import NOTIFY_CHAR_UUID, WRITE_CHAR_UUID, SEND_MAX_TRIES
+
+# Legacy shim kept for backwards compatibility with old bleak-style callers.
+discover = BleakScanner.discover
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ class Connection(TransportDelegate):
 
     async def send(self, cmd_id: int, data: bytearray):
         cmd_response = asyncio.get_event_loop().create_future()
-        if not cmd_id in self.requests:
+        if cmd_id not in self.requests:
             self.requests[cmd_id] = []
 
         self.requests[cmd_id].append(cmd_response)
@@ -242,7 +242,7 @@ class Connection(TransportDelegate):
 
         cmd_id = self.bytes_to_cmd_id(data)
 
-        if not cmd_id in self.requests:
+        if cmd_id not in self.requests:
             return
         if len(self.requests[cmd_id]) > 0:
             req = self.requests[cmd_id].pop(0)
@@ -256,7 +256,7 @@ class Connection(TransportDelegate):
 
         cmd_id = self.bytes_to_cmd_id(data)
 
-        if not cmd_id in self.requests:
+        if cmd_id not in self.requests:
             return
 
         if len(self.requests[cmd_id]) > 0:
@@ -288,7 +288,7 @@ class Connection(TransportDelegate):
                                     value = raw.hex().replace("fe", "-").replace("ff", "")
                                 else:
                                     value = raw.decode()
-                            except:
+                            except Exception:
                                 value = str(raw)
                             values[char.description] = value
                         except Exception as e:

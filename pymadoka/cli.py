@@ -19,11 +19,9 @@ from pymadoka.features.clean_filter import ResetCleanFilterTimerStatus
 def format_output(format,status):
     try:
         print(json.dumps(vars(status),default=str))
-    except:
+    except Exception:
         print(json.dumps(status,default=str))
 
-import threading
-import time
 
 logger = logging.getLogger(__name__)
 

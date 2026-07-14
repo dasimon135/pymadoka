@@ -9,4 +9,35 @@ from .features.operationmode import OperationMode, OperationModeStatus, Operatio
 from .features.power import PowerState, PowerStateStatus
 from .features.setpoint import SetPoint, SetPointStatus
 from .features.temperatures import Temperatures, TemperaturesStatus
-from .cli import cli
+
+# NOTE: .cli is intentionally NOT imported here: it needs the [cli] extra
+# (click) and would break `import pymadoka` on a lean install.
+
+__all__ = [
+    "Controller",
+    "Connection",
+    "ConnectionException",
+    "discover_devices",
+    "force_device_disconnect",
+    "Feature",
+    "FeatureStatus",
+    "NotImplementedException",
+    "CleanFilterIndicator",
+    "CleanFilterIndicatorStatus",
+    "ResetCleanFilterTimer",
+    "ResetCleanFilterTimerStatus",
+    "EyeBrightness",
+    "EyeBrightnessStatus",
+    "FanSpeed",
+    "FanSpeedStatus",
+    "FanSpeedEnum",
+    "OperationMode",
+    "OperationModeStatus",
+    "OperationModeEnum",
+    "PowerState",
+    "PowerStateStatus",
+    "SetPoint",
+    "SetPointStatus",
+    "Temperatures",
+    "TemperaturesStatus",
+]

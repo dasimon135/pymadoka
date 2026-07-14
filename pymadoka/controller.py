@@ -6,7 +6,7 @@ import logging
 from typing import Union, Dict
 from enum import Enum
 from pymadoka.feature import Feature, NotImplementedException
-from pymadoka.connection import Connection, ConnectionException, ConnectionStatus
+from pymadoka.connection import Connection, ConnectionException
 from pymadoka.features.fanspeed import FanSpeed
 from pymadoka.features.operationmode import OperationMode
 from pymadoka.features.power import PowerState

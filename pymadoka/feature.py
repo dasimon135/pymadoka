@@ -177,7 +177,7 @@ class Feature(ABC):
         """
 
         if self.connection.connection_status == ConnectionStatus.ABORTED:
-                raise ConnectionAbortedError(f"Could not send command: connection is not available")
+                raise ConnectionAbortedError("Could not send command: connection is not available")
 
         cmd_id = self.query_cmd_id()
         try:
@@ -191,7 +191,7 @@ class Feature(ABC):
             logger.debug(f"{self.__class__.__name__} status updated, new value:\n{json.dumps(vars(new_status), default=str)}")
             self.status = new_status
             return self.status
-        except CancelledError as e:
+        except CancelledError:
             if cmd_id in self.connection.requests:
                 if len(self.connection.requests[cmd_id]) > 0:
                     self.connection.requests[cmd_id].pop()
@@ -240,7 +240,7 @@ class Feature(ABC):
         """
 
         if self.connection.connection_status == ConnectionStatus.ABORTED:
-                raise ConnectionAbortedError(f"Could not send command: connection is not available")
+                raise ConnectionAbortedError("Could not send command: connection is not available")
 
         cmd_id = self.update_cmd_id()
         try:
@@ -254,7 +254,7 @@ class Feature(ABC):
             logger.debug(f"{self.__class__.__name__} status updated, new value:\n{json.dumps(vars(response_status), default=str)}")
             self.status = update_status
             return self.status
-        except CancelledError as e:
+        except CancelledError:
             if cmd_id in self.connection.requests:
                 if len(self.connection.requests[cmd_id]) > 0:
                     self.connection.requests[cmd_id].pop()

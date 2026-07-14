@@ -33,7 +33,7 @@ class TemperaturesStatus(FeatureStatus):
         self.indoor = values[self.INDOOR_IDX][0]
         self.outdoor = values[self.OUTDOOR_IDX][0]
         if self.outdoor == 0xff:
-            self.outdoor = None;
+            self.outdoor = None
         
     def get_values(self) -> Dict[str,bytearray]:
         """See base class."""
