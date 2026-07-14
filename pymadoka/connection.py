@@ -122,14 +122,7 @@ class Connection(TransportDelegate):
     async def _connect_via_ha(self):
         """Connect using HA's BLE device registry and bleak_retry_connector."""
         from homeassistant.components.bluetooth import async_ble_device_from_address
-        try:
-            from bleak_retry_connector import establish_connection
-        except ImportError:
-            logger.warning("bleak_retry_connector not available, falling back to direct BleakClient")
-            if self.client is None:
-                await self._select_device()
-            await self._connect()
-            return
+        from bleak_retry_connector import establish_connection
 
         ble_device = async_ble_device_from_address(self.hass, self.address, connectable=True)
         if ble_device is None:
