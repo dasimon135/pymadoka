@@ -111,8 +111,11 @@ class Connection(TransportDelegate):
                         await asyncio.sleep(2.0)
                 except ConnectionAbortedError:
                     self.connection_status = ConnectionStatus.ABORTED
-                except CancelledError as e:
-                    logger.error(f"Connection task cancelled for {self.address}: {e}")
+                except CancelledError:
+                    # Propagate cancellation (e.g. asyncio.wait_for timeout in the
+                    # caller) instead of looping forever.
+                    logger.debug(f"Connection task cancelled for {self.address}")
+                    raise
                 except Exception as e:
                     logger.error(f"Unexpected error in connection loop for {self.address}: {e}")
                     self.connection_status = ConnectionStatus.ABORTED
