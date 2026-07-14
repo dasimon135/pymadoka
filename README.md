@@ -1,5 +1,7 @@
 # PyMadoka
 
+> **Fork notice (0.3.0):** this fork ([dasimon135/pymadoka](https://github.com/dasimon135/pymadoka)) powers the [daikin_madoka](https://github.com/dasimon135/daikin_madoka) Home Assistant integration. Since 0.3.0 it connects through Home Assistant's Bluetooth stack (`bleak-retry-connector`, ESPHome Bluetooth proxy compatible), ships a lean core (`pip install pymadoka` pulls only `bleak` + `bleak-retry-connector`; use the `[cli]` / `[mqtt]` extras for the command-line tools), and has unit tests + CI. The standalone/CLI Linux path described below still works.
+
 This library has been written to control the thermostat Daikin BRC1H family without the need to use the mobile Madoka apps.
 
 The code is based on the previous work by Benjamin Lafois (both [reverse engineering](https://github.com/blafois/Daikin-Madoka-BRC1H-BLE-Reverse) and [OpenHAB add-on](https://github.com/openhab/openhab-addons/tree/main/bundles/org.openhab.binding.bluetooth.daikinmadoka/src/main/java/org/openhab/binding/bluetooth/daikinmadoka)).
