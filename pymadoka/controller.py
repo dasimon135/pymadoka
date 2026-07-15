@@ -71,18 +71,23 @@ class Controller:
         """
         await self.connection.cleanup()
 
-    async def update(self, query_retries: int = 2):
+    async def update(self, query_retries: int = 1):
         """Iterate over all the features and query their status.
 
         A single feature query can fail transiently (a chunked notification
         response that could not be reassembled, or a short timeout), especially
         when the link is relayed through a BLE proxy. Such a failure is retried
-        a few times per feature and, if it still fails, that feature is skipped
-        rather than aborting the whole poll — so the rest of the features (and
-        the entities that depend on them) still update. Only a dead link
-        (ConnectionAbortedError) stops the poll.
+        once per feature and, if it still fails, that feature is skipped rather
+        than aborting the whole poll — so the rest of the features (and the
+        entities that depend on them) still update.
+
+        A dead link (ConnectionAbortedError) stops the poll immediately, and a
+        poll where NO feature answered raises ConnectionException: without it a
+        connected-but-unresponsive device would look like a successful update
+        of stale, previously accumulated statuses.
         """
 
+        answered = 0
         for var in vars(self).values():
             if not isinstance(var, Feature):
                 continue
@@ -90,6 +95,7 @@ class Controller:
             for attempt in range(query_retries + 1):
                 try:
                     await var.query()
+                    answered += 1
                     break
                 except NotImplementedException as e:
                     if not isinstance(var, ResetCleanFilterTimer):
@@ -113,6 +119,9 @@ class Controller:
                 except Exception as e:
                     logger.error(f"Failed to update {var.__class__.__name__}: {str(e)}")
                     break
+
+        if answered == 0:
+            raise ConnectionException("No feature answered any query")
 
 
     def refresh_status(self) -> Dict[str,Union[int,str,bool,dict,Enum]]:

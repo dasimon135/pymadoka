@@ -10,9 +10,6 @@ from typing import Dict
 from pymadoka.transport import Transport, TransportDelegate
 from pymadoka.consts import NOTIFY_CHAR_UUID, WRITE_CHAR_UUID, SEND_MAX_TRIES
 
-# Legacy shim kept for backwards compatibility with old bleak-style callers.
-discover = BleakScanner.discover
-
 logger = logging.getLogger(__name__)
 
 class ConnectionException(Exception):
@@ -73,8 +70,23 @@ class Connection(TransportDelegate):
         self.requests = {}
         self._is_starting = False
         self._closing = False
+        self._paired = False
         self._operation_lock = asyncio.Lock()
         self._retry_delay = 5.0
+
+    def discard_request(self, cmd_id: int, cmd_response) -> None:
+        """Remove a pending response future from the request queue.
+
+        Called on timeout/cancellation so a late response cannot resolve an
+        abandoned future and desync the FIFO for this cmd_id.
+        """
+        queue = self.requests.get(cmd_id)
+        if not queue:
+            return
+        try:
+            queue.remove(cmd_response)
+        except ValueError:
+            pass
 
     def on_disconnect(self, client: BleakClient):
         self.connection_status = ConnectionStatus.DISCONNECTED
@@ -155,28 +167,58 @@ class Connection(TransportDelegate):
             # Establish the authenticated bond BEFORE any GATT operation.
             # Otherwise bleak connects unencrypted and only pairs reactively
             # when a read hits "Insufficient authentication" — which the BRC1H
-            # handles poorly, dropping the link mid-exchange. Best-effort: some
-            # backends bond implicitly and pair() is a no-op or unsupported.
-            try:
-                await asyncio.wait_for(self.client.pair(), timeout=15.0)
-            except Exception as pair_err:  # noqa: BLE001
-                logger.debug(f"pair() skipped for {self.address}: {pair_err}")
+            # handles poorly, dropping the link mid-exchange. Only needed once
+            # per Connection lifetime: the bond persists across reconnects.
+            just_paired = False
+            if not self._paired:
+                try:
+                    await asyncio.wait_for(self.client.pair(), timeout=8.0)
+                    self._paired = True
+                    just_paired = True
+                except Exception as pair_err:  # noqa: BLE001
+                    # Surface loudly: an actually-refused bond means every
+                    # later GATT exchange will be silently ignored.
+                    logger.warning(f"Pairing with {self.address} did not complete: {pair_err}")
 
             await self.client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
 
-            # Let the bonded link and notification subscription settle before
-            # the first command; proxied notifications can otherwise be dropped
-            # and the chunked response fails to reassemble.
-            await asyncio.sleep(1.5)
+            if just_paired:
+                # Let the fresh bond and notification subscription settle
+                # before the first command; proxied notifications can
+                # otherwise be dropped and the chunked response fails to
+                # reassemble.
+                await asyncio.sleep(1.5)
+
+            if not self.client.is_connected:
+                # The device dropped the link during pair/subscribe/settle;
+                # do NOT stamp CONNECTED over the disconnect or the state
+                # machine lies forever. The outer loop will retry.
+                logger.warning(f"{self.address} dropped the link right after connecting, retrying")
+                return
 
             self.connection_status = ConnectionStatus.CONNECTED
             self._retry_delay = 5.0  # reset backoff on successful connect
             logger.info(f"Connected to {self.address} ({self.name}) via bleak_retry_connector")
+        except CancelledError:
+            # Caller timeout cancelled us mid-connect: don't leak a live link
+            # (the BRC1H accepts a single central) — detach and disconnect it.
+            client, self.client = self.client, None
+            if client is not None:
+                asyncio.get_event_loop().create_task(self._disconnect_client(client))
+            raise
         except Exception as e:
             logger.error(f"Failed to connect to {self.address}: {e}")
             logger.info(f"Retrying {self.address} in {self._retry_delay:.0f}s")
             await asyncio.sleep(self._retry_delay)
             self._retry_delay = min(self._retry_delay * 2, 60.0)
+
+    @staticmethod
+    async def _disconnect_client(client: BleakClient) -> None:
+        """Best-effort disconnect of an orphaned client."""
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            logger.debug("Orphaned client disconnect failed", exc_info=True)
 
     async def _connect(self):
         try:

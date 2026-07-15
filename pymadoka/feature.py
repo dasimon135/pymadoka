@@ -163,6 +163,47 @@ class Feature(ABC):
         """
         pass
 
+    async def _send_command(self, cmd_id:int, payload:bytearray) -> bytes:
+        """Send a command and wait for its response, with strict queue hygiene.
+
+        On timeout or cancellation the pending future is removed from the
+        connection's request queue: leaving it there would let a late response
+        resolve the abandoned future and permanently desync the FIFO pairing
+        of requests and responses for this cmd_id.
+
+        Raises:
+            ConnectionAbortedError: The connection is not available
+            ConnectionException: The link dropped while waiting for the response
+            asyncio.TimeoutError: No response within 10s
+            asyncio.CancelledError: The calling task was cancelled (propagated)
+        """
+        if self.connection.connection_status == ConnectionStatus.ABORTED:
+            raise ConnectionAbortedError("Could not send command: connection is not available")
+
+        response = None
+        try:
+            async with self.connection._operation_lock:
+                response = await self.connection.send(cmd_id, payload)
+                await asyncio.wait_for(asyncio.shield(response), timeout=10.0)
+            return response.result()
+        except asyncio.TimeoutError:
+            if response is not None:
+                self.connection.discard_request(cmd_id, response)
+            raise
+        except CancelledError:
+            if response is not None:
+                self.connection.discard_request(cmd_id, response)
+            if response is not None and response.cancelled():
+                # send() cancelled the request future because the link dropped;
+                # the surrounding task is still alive.
+                if self.connection.connection_status == ConnectionStatus.ABORTED:
+                    raise ConnectionAbortedError(
+                        "Could not send command: connection is not available"
+                    ) from None
+                raise ConnectionException("Could not send command: connection lost") from None
+            # Real task cancellation (caller timeout, shutdown): propagate.
+            raise
+
     async def query(self) -> FeatureStatus:
         """This method is used to query the device for this feature.
 
@@ -175,37 +216,15 @@ class Feature(ABC):
             ConnectionException: If an error appeared during message delivery or reception
             Exception: Any other exception raised is bubbled-up
         """
-
-        if self.connection.connection_status == ConnectionStatus.ABORTED:
-                raise ConnectionAbortedError("Could not send command: connection is not available")
-
         cmd_id = self.query_cmd_id()
-        try:
-            async with self.connection._operation_lock:
-                new_status = self.new_status()
-                response = await self.connection.send(cmd_id, new_status.serialize())
-                await asyncio.wait_for(asyncio.shield(response), timeout=10.0)
-            result = response.result()
-            logger.debug(f"{self.__class__.__name__} QUERY response received ({len(result)} bytes)")
-            new_status.parse(result)
-            logger.debug(f"{self.__class__.__name__} status updated, new value:\n{json.dumps(vars(new_status), default=str)}")
-            self.status = new_status
-            return self.status
-        except CancelledError:
-            if cmd_id in self.connection.requests:
-                if len(self.connection.requests[cmd_id]) > 0:
-                    self.connection.requests[cmd_id].pop()
-            if self.connection.connection_status == ConnectionStatus.ABORTED:
-                raise ConnectionAbortedError("Could not send command: connection is not available")
-            elif self.connection.connection_status == ConnectionStatus.CONNECTING:
-                pass
-            else:
-                raise ConnectionException("Could not send command: message could not be rebuilt")
-        except ConnectionAbortedError as e:
-            raise e
-        except Exception as e:
-            raise e
-        
+        new_status = self.new_status()
+        result = await self._send_command(cmd_id, new_status.serialize())
+        logger.debug(f"{self.__class__.__name__} QUERY response received ({len(result)} bytes)")
+        new_status.parse(result)
+        logger.debug(f"{self.__class__.__name__} status updated, new value:\n{json.dumps(vars(new_status), default=str)}")
+        self.status = new_status
+        return self.status
+
 
     async def update(self,update_status:FeatureStatus) -> FeatureStatus:
         """This method is used to update the device for this feature.
@@ -238,34 +257,12 @@ class Feature(ABC):
             ConnectionException: If an error appeared during message delivery or reception
             Exception: Any other exception raised is bubbled-up
         """
-
-        if self.connection.connection_status == ConnectionStatus.ABORTED:
-                raise ConnectionAbortedError("Could not send command: connection is not available")
-
         cmd_id = self.update_cmd_id()
-        try:
-            async with self.connection._operation_lock:
-                response = await self.connection.send(cmd_id, update_status.serialize())
-                await asyncio.wait_for(asyncio.shield(response), timeout=10.0)
-            result = response.result()
-            logger.debug(f"{self.__class__.__name__} UPDATE response received ({len(result)} bytes)")
-            response_status = self.new_status()
-            response_status.parse(result)
-            logger.debug(f"{self.__class__.__name__} status updated, new value:\n{json.dumps(vars(response_status), default=str)}")
-            self.status = update_status
-            return self.status
-        except CancelledError:
-            if cmd_id in self.connection.requests:
-                if len(self.connection.requests[cmd_id]) > 0:
-                    self.connection.requests[cmd_id].pop()
-            if self.connection.connection_status == ConnectionStatus.ABORTED:
-                raise ConnectionAbortedError("Could not send command: connection is not available")
-            elif self.connection.connection_status == ConnectionStatus.CONNECTING:
-                pass
-            else:
-                raise ConnectionException("Could not send command: message could not be rebuilt")
-        except ConnectionAbortedError as e:
-            raise e
-        except Exception as e:
-            raise e
+        result = await self._send_command(cmd_id, update_status.serialize())
+        logger.debug(f"{self.__class__.__name__} UPDATE response received ({len(result)} bytes)")
+        response_status = self.new_status()
+        response_status.parse(result)
+        logger.debug(f"{self.__class__.__name__} status updated, new value:\n{json.dumps(vars(response_status), default=str)}")
+        self.status = update_status
+        return self.status
        

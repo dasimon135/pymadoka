@@ -64,27 +64,53 @@ class SetPointStatus(FeatureStatus):
         self.cooling_upperlimit_symbol = 0
         self.heating_upperlimit_symbol = 0
         
+    @staticmethod
+    def _temperature(values:Dict[int,bytes], idx, default:int=0) -> int:
+        """Decode a 2-byte temperature param (device format = value * 128)."""
+        raw = values.get(idx[0])
+        if raw is None:
+            return default
+        return round(int.from_bytes(raw,"big")/128.0)
+
+    @staticmethod
+    def _flag(values:Dict[int,bytes], idx, default:int=0) -> int:
+        """Decode a 1-byte param (raw value, NOT scaled by 128).
+
+        Verified on hardware (BRC1H diagnostics dump): mode arrives as 0x01,
+        max_cooling_upperlimit as 0x20 (=32) — plain integers. The historical
+        /128 decode read every 1-byte param as 0, which silently disabled
+        range mode detection.
+        """
+        raw = values.get(idx[0])
+        if raw is None:
+            return default
+        return int.from_bytes(raw,"big")
+
     def set_values(self, values:Dict[str,bytearray]):
-        """See base class."""
+        """See base class.
+
+        Only the set points are mandatory; every other param is optional so a
+        firmware variant (or a shorter response) cannot fail the whole parse.
+        """
 
         self._raw_values = {key: bytes(value) for key, value in values.items()}
         self.cooling_set_point = round(int.from_bytes(values[self.COOLING_IDX[0]],"big")/128.0)
         self.heating_set_point = round(int.from_bytes(values[self.HEATING_IDX[0]],"big")/128.0)
-        self.range_enabled = round(int.from_bytes(values[self.RANGE_ENABLED_IDX[0]],"big")/128.0)
-        self.mode = round(int.from_bytes(values[self.MODE_IDX[0]],"big")/128.0)
-        self.min_differential = round(int.from_bytes(values[self.MINIMUM_DIFFERENTIAL_IDX[0]],"big")/128.0)
-        self.min_cooling_lowerlimit = round(int.from_bytes(values[self.MIN_COOLING_LOWERLIMIT_IDX[0]],"big")/128.0)
-        self.min_heating_lowerlimit = round(int.from_bytes(values[self.MIN_HEATING_LOWERLIMIT_IDX[0]],"big")/128.0)
-        self.cooling_lowerlimit = round(int.from_bytes(values[self.COOLING_LOWERLIMIT_IDX[0]],"big")/128.0)
-        self.heating_lowerlimit = round(int.from_bytes(values[self.HEATING_LOWERLIMIT_IDX[0]],"big")/128.0)
-        self.cooling_lowerlimit_symbol = round(int.from_bytes(values[self.COOLING_LOWERLIMIT_SYMBOL_IDX[0]],"big")/128.0)
-        self.heating_lowerlimit_symbol = round(int.from_bytes(values[self.HEATING_LOWERLIMIT_SYMBOL_IDX[0]],"big")/128.0)
-        self.max_cooling_upperlimit = round(int.from_bytes(values[self.MAX_COOLING_UPPERLIMIT_IDX[0]],"big")/128.0)
-        self.max_heating_upperlimit = round(int.from_bytes(values[self.MAX_HEATING_UPPERLIMIT_IDX[0]],"big")/128.0)
-        self.cooling_upperlimit = round(int.from_bytes(values[self.COOLING_UPPERLIMIT_IDX[0]],"big")/128.0)
-        self.heating_upperlimit = round(int.from_bytes(values[self.HEATING_UPPERLIMIT_IDX[0]],"big")/128.0)
-        self.cooling_upperlimit_symbol = round(int.from_bytes(values[self.COOLING_UPPERLIMIT_SYMBOL_IDX[0]],"big")/128.0)
-        self.heating_upperlimit_symbol = round(int.from_bytes(values[self.HEATING_UPPERLIMIT_SYMBOL_IDX[0]],"big")/128.0)
+        self.range_enabled = self._flag(values, self.RANGE_ENABLED_IDX)
+        self.mode = self._flag(values, self.MODE_IDX)
+        self.min_differential = self._flag(values, self.MINIMUM_DIFFERENTIAL_IDX)
+        self.min_cooling_lowerlimit = self._flag(values, self.MIN_COOLING_LOWERLIMIT_IDX)
+        self.min_heating_lowerlimit = self._flag(values, self.MIN_HEATING_LOWERLIMIT_IDX)
+        self.cooling_lowerlimit = self._temperature(values, self.COOLING_LOWERLIMIT_IDX)
+        self.heating_lowerlimit = self._temperature(values, self.HEATING_LOWERLIMIT_IDX)
+        self.cooling_lowerlimit_symbol = self._flag(values, self.COOLING_LOWERLIMIT_SYMBOL_IDX)
+        self.heating_lowerlimit_symbol = self._flag(values, self.HEATING_LOWERLIMIT_SYMBOL_IDX)
+        self.max_cooling_upperlimit = self._flag(values, self.MAX_COOLING_UPPERLIMIT_IDX)
+        self.max_heating_upperlimit = self._flag(values, self.MAX_HEATING_UPPERLIMIT_IDX)
+        self.cooling_upperlimit = self._temperature(values, self.COOLING_UPPERLIMIT_IDX)
+        self.heating_upperlimit = self._temperature(values, self.HEATING_UPPERLIMIT_IDX)
+        self.cooling_upperlimit_symbol = self._flag(values, self.COOLING_UPPERLIMIT_SYMBOL_IDX)
+        self.heating_upperlimit_symbol = self._flag(values, self.HEATING_UPPERLIMIT_SYMBOL_IDX)
         
         
     def get_values(self) -> Dict[str,bytearray]:
