@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 # package stays `pymadoka`. Also forces HA to install fresh: HA never
 # reinstalls a git requirement whose dist name is already present.
 name = "pymadoka-ng"
-version = "0.3.3"
+version = "0.3.4"
 description = "A library to control Daikin BRC1H (Madoka) thermostats over Bluetooth LE"
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,7 +18,18 @@ maintainers = [
     { name = "dasimon135" },
 ]
 requires-python = ">=3.11"
-keywords = ["thermostat", "homeautomation", "bluetooth", "daikin", "brc1h"]
+keywords = ["thermostat", "homeautomation", "bluetooth", "daikin", "brc1h", "madoka", "homeassistant"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+]
 dependencies = [
     "bleak>=0.21",
     "bleak-retry-connector>=3.4",
@@ -31,6 +42,9 @@ test = ["pytest", "pytest-asyncio"]
 
 [project.urls]
 Homepage = "https://github.com/dasimon135/pymadoka"
+Repository = "https://github.com/dasimon135/pymadoka"
+Issues = "https://github.com/dasimon135/pymadoka/issues"
+Changelog = "https://github.com/dasimon135/pymadoka/releases"
 
 [project.scripts]
 pymadoka = "pymadoka.cli:cli"
