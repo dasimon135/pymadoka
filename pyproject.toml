@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Distribution renamed from upstream "pymadoka" (taken on PyPI); the import
+# package stays `pymadoka`. Also forces HA to install fresh: HA never
+# reinstalls a git requirement whose dist name is already present.
+name = "pymadoka-ng"
+version = "0.3.3"
+description = "A library to control Daikin BRC1H (Madoka) thermostats over Bluetooth LE"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Manuel Durán", email = "manuelduran@gmail.com" },
+]
+maintainers = [
+    { name = "dasimon135" },
+]
+requires-python = ">=3.11"
+keywords = ["thermostat", "homeautomation", "bluetooth", "daikin", "brc1h"]
+dependencies = [
+    "bleak>=0.21",
+    "bleak-retry-connector>=3.4",
+]
+
+[project.optional-dependencies]
+cli = ["click", "pyyaml"]
+mqtt = ["click", "pyyaml", "asyncio-mqtt"]
+test = ["pytest", "pytest-asyncio"]
+
+[project.urls]
+Homepage = "https://github.com/dasimon135/pymadoka"
+
+[project.scripts]
+pymadoka = "pymadoka.cli:cli"
+pymadoka-mqtt = "pymadoka.mqtt:run"
+
+[tool.setuptools.packages.find]
+include = ["pymadoka*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

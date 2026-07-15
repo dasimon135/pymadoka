@@ -3,10 +3,15 @@ import logging
 from pymadoka.connection import discover_devices, force_device_disconnect
 
 
-import click
+try:
+    import click
+except ImportError as import_error:  # optional [cli] extra not installed
+    raise SystemExit(
+        "The pymadoka CLI needs the [cli] extra: pip install 'pymadoka[cli]'"
+    ) from import_error
 import time
 import json
-import threading  
+import threading
 
 from functools import wraps
 from pymadoka.controller import Controller
@@ -19,11 +24,9 @@ from pymadoka.features.clean_filter import ResetCleanFilterTimerStatus
 def format_output(format,status):
     try:
         print(json.dumps(vars(status),default=str))
-    except:
+    except Exception:
         print(json.dumps(status,default=str))
 
-import threading
-import time
 
 logger = logging.getLogger(__name__)
 

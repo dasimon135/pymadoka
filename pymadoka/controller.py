@@ -6,7 +6,7 @@ import logging
 from typing import Union, Dict
 from enum import Enum
 from pymadoka.feature import Feature, NotImplementedException
-from pymadoka.connection import Connection, ConnectionException, ConnectionStatus
+from pymadoka.connection import Connection, ConnectionException
 from pymadoka.features.fanspeed import FanSpeed
 from pymadoka.features.operationmode import OperationMode
 from pymadoka.features.power import PowerState
@@ -71,27 +71,57 @@ class Controller:
         """
         await self.connection.cleanup()
 
-    async def update(self):
+    async def update(self, query_retries: int = 1):
         """Iterate over all the features and query their status.
+
+        A single feature query can fail transiently (a chunked notification
+        response that could not be reassembled, or a short timeout), especially
+        when the link is relayed through a BLE proxy. Such a failure is retried
+        once per feature and, if it still fails, that feature is skipped rather
+        than aborting the whole poll — so the rest of the features (and the
+        entities that depend on them) still update.
+
+        A dead link (ConnectionAbortedError) stops the poll immediately, and a
+        poll where NO feature answered raises ConnectionException: without it a
+        connected-but-unresponsive device would look like a successful update
+        of stale, previously accumulated statuses.
         """
 
+        answered = 0
         for var in vars(self).values():
-            if isinstance(var,Feature):
+            if not isinstance(var, Feature):
+                continue
+
+            for attempt in range(query_retries + 1):
                 try:
                     await var.query()
+                    answered += 1
+                    break
                 except NotImplementedException as e:
                     if not isinstance(var, ResetCleanFilterTimer):
                         raise e
-                except asyncio.TimeoutError:
-                    logger.warning(f"Query timed out for {var.__class__.__name__}, skipping")
+                    break
                 except ConnectionAbortedError as e:
                     logger.debug(f"Connection aborted: {str(e)}")
                     raise e
-                except ConnectionException as e:
-                    logger.debug(f"Connection error: {str(e)}")
-                    raise e
+                except (asyncio.TimeoutError, ConnectionException) as e:
+                    if attempt < query_retries:
+                        logger.debug(
+                            f"Query attempt {attempt + 1}/{query_retries + 1} failed "
+                            f"for {var.__class__.__name__}, retrying: {str(e)}"
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    logger.warning(
+                        f"Query failed for {var.__class__.__name__} after "
+                        f"{query_retries + 1} attempts, skipping: {str(e)}"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to update {var.__class__.__name__}: {str(e)}")
+                    break
+
+        if answered == 0:
+            raise ConnectionException("No feature answered any query")
 
 
     def refresh_status(self) -> Dict[str,Union[int,str,bool,dict,Enum]]:

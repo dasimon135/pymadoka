@@ -1,23 +1,26 @@
 import asyncio
 from asyncio.exceptions import CancelledError
-from hashlib import new
 import logging
-import click
 import json
-import yaml
 
-import paho.mqtt.client as mqtt
-from paho.mqtt import MQTTException
+try:
+    import click
+    import yaml
+    import paho.mqtt.client as mqtt
+    from paho.mqtt import MQTTException
+except ImportError as import_error:  # optional [mqtt] extra not installed
+    raise SystemExit(
+        "The pymadoka-mqtt bridge needs the [mqtt] extra: pip install 'pymadoka[mqtt]'"
+    ) from import_error
 from typing import Any, Dict, List
 from dataclasses import dataclass, field
 from functools import wraps
-from pymadoka.connection import Connection, ConnectionStatus, ConnectionException, discover_devices, force_device_disconnect
+from pymadoka.connection import ConnectionStatus, ConnectionException, discover_devices, force_device_disconnect
 from pymadoka.controller import Controller
 from pymadoka.features.fanspeed import FanSpeedEnum, FanSpeedStatus
 from pymadoka.features.setpoint import SetPointStatus
 from pymadoka.features.operationmode import OperationModeStatus, OperationModeEnum
 from pymadoka.features.power import PowerStateStatus
-from pymadoka.features.clean_filter import ResetCleanFilterTimerStatus
 from pymadoka import Feature
 
 logger = logging.getLogger(__name__)
@@ -309,7 +312,7 @@ class MQTT:
         
         try:
 
-            aioh = AsyncioHelper(self.loop, self.client)
+            AsyncioHelper(self.loop, self.client)
          
             self.client.on_connect = self.on_connect
             self.client.on_message = self.on_message
@@ -481,10 +484,10 @@ async def periodic_update(interval:int,controller:Controller,mqtt_service:MQTT):
                 mqtt_service.update(json.dumps(status,default=str))                
             except CancelledError as e:
                 logger.error(f"Operation cancelled : {str(e)}")
-            except ConnectionAbortedError as e:
+            except ConnectionAbortedError:
                 mqtt_service.available(False)
                 reconnect = True
-            except ConnectionException as e:
+            except ConnectionException:
                 mqtt_service.available(False)
                 reconnect = True
             except Exception as e:
@@ -536,7 +539,7 @@ async def run(ctx,verbose,adapter,log_output,debug,address,force_disconnect, dev
     
     if force_disconnect:
         await force_device_disconnect(madoka.connection.address)
-    discovered_devices = await discover_devices(timeout = ctx.obj["timeout"], adapter = ctx.obj["adapter"])
+    await discover_devices(timeout = ctx.obj["timeout"], adapter = ctx.obj["adapter"])
     mqtt_service = MQTT(asyncio.get_event_loop(),madoka,yml_config)
     update_task = None
     try:
@@ -564,7 +567,7 @@ async def run(ctx,verbose,adapter,log_output,debug,address,force_disconnect, dev
         mqtt_service.stop()
         await madoka.stop()
         logger.error(e)
-    except ConnectionRefusedError as e:
+    except ConnectionRefusedError:
         logger.error("Could not connect to MQTT broker")
     except Exception as e:
         logger.error(e)
