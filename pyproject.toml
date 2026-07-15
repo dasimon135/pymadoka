@@ -3,8 +3,11 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pymadoka"
-version = "0.3.1"
+# Distribution renamed from upstream "pymadoka" (taken on PyPI); the import
+# package stays `pymadoka`. Also forces HA to install fresh: HA never
+# reinstalls a git requirement whose dist name is already present.
+name = "pymadoka-ng"
+version = "0.3.2"
 description = "A library to control Daikin BRC1H (Madoka) thermostats over Bluetooth LE"
 readme = "README.md"
 license = { text = "MIT" }
