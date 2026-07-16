@@ -90,6 +90,11 @@ class Connection(TransportDelegate):
 
     def on_disconnect(self, client: BleakClient):
         self.connection_status = ConnectionStatus.DISCONNECTED
+        # Re-pair on the next connect: the bond is stored per BLE adapter/proxy,
+        # so a reconnect may land on a peer that still needs to authenticate.
+        # Skipping pair() there fails every GATT op with "Insufficient
+        # authentication".
+        self._paired = False
         logger.info(f"Disconnected {self.address}")
         if self.reconnect and not self._is_starting and not self._closing:
             asyncio.create_task(self.start())
@@ -97,6 +102,7 @@ class Connection(TransportDelegate):
     async def cleanup(self):
         self._closing = True
         self.reconnect = False
+        self._paired = False
         if self.client:
             try:
                 await self.client.stop_notify(NOTIFY_CHAR_UUID)
