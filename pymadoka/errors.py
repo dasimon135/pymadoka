@@ -6,6 +6,7 @@ DeviceUnreachableError -> "device out of range / no proxy sees it".
 """
 from __future__ import annotations
 
+import re
 from typing import Optional, Sequence
 
 
@@ -23,7 +24,7 @@ class PairingRequiredError(MadokaError):
     def __init__(self, address: str, tried_sources: Optional[Sequence[Optional[str]]] = None):
         self.address = address
         self.tried_sources = list(tried_sources or [])
-        via = ", ".join(s if s is not None else "local adapter" for s in self.tried_sources) or "unknown"
+        via = ", ".join(str(s) if s is not None else "local adapter" for s in self.tried_sources) or "unknown"
         super().__init__(
             f"{address} refused the authenticated bond on every attempted "
             f"path (tried via: {via}) — confirm the pairing prompt on the "
@@ -47,17 +48,22 @@ _PAIRING_ERROR_MARKERS = (
     "insufficient encryption",
     "pairing failed",
     "authentication failed",
-    "error=5 ",          # ATT error 0x05 = insufficient authentication
+    "org.bluez.error.authentication",  # BlueZ AuthenticationRejected/Canceled/Timeout
 )
+
+# ATT error 0x05 = insufficient authentication; word boundary so that
+# e.g. "error=51" does not match, and a message ending in "error=5" does.
+_ATT_ERROR_5_RE = re.compile(r"\berror=5\b")
 
 
 def is_pairing_error(exc: BaseException) -> bool:
     """True if the exception denotes a missing/refused authenticated bond.
 
-    A TimeoutError from pair() counts: it almost always means the numeric
-    comparison prompt is sitting unanswered on the thermostat screen.
+    Marker-only contract: classification is based solely on the error text.
+    A bare TimeoutError is NOT classified here: only the pair() call site
+    knows a timeout means an unanswered prompt — handle it there.
     """
-    if isinstance(exc, TimeoutError):
-        return True
     text = str(exc).lower()
-    return any(marker in text for marker in _PAIRING_ERROR_MARKERS)
+    if any(marker in text for marker in _PAIRING_ERROR_MARKERS):
+        return True
+    return _ATT_ERROR_5_RE.search(text) is not None

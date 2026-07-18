@@ -47,9 +47,19 @@ def test_pairing_required_renders_none_source_as_local_adapter():
         # esp32_ble_client pairing failure (error 97 seen in HA logs)
         (BleakError("Pairing failed due to error: 97"), True),
         (BleakError("Insufficient Encryption"), True),
-        # pair() timeout = prompt sitting unanswered on the screen
-        (TimeoutError(), True),
+        # ATT error 0x05 at the very end of the message (no trailing space)
+        (BleakError(
+            "Bluetooth GATT Error address=X handle=515 error=5"), True),
+        # BlueZ local-adapter rejection (AuthenticationRejected/Canceled/...)
+        (BleakError("org.bluez.Error.AuthenticationRejected"), True),
         # NOT pairing problems:
+        # Marker-only contract: a bare TimeoutError is NOT classified here.
+        # Only the pair() call site knows a timeout means an unanswered
+        # prompt; it is responsible for treating its own TimeoutError as a
+        # pairing failure (Task 4 call-site contract).
+        (TimeoutError(), False),
+        # "error=51" must not be mistaken for ATT error 5
+        (BleakError("error=51 something"), False),
         (BleakError("Device disconnected"), False),
         (BleakError("No backend with an available connection slot"), False),
         (ConnectionError("boom"), False),
