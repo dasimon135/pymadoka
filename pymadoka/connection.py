@@ -62,7 +62,17 @@ async def force_device_disconnect(address):
 
 
 class Connection(TransportDelegate):
-    """Bluetooth client"""
+    """Bluetooth client.
+
+    Attributes:
+        candidates_callback: callback returning an ordered list of BLEDevice
+            candidates (preferred path first); when provided, the HA connect
+            path tries them in order instead of letting HA pick by RSSI.
+        connected_source: source MAC of the proxy that served the current
+            connection, None when not connected or via local adapter.
+        last_error: last classified MadokaError, None after a successful
+            connect.
+    """
 
     client: BleakClient = None
 
@@ -73,12 +83,16 @@ class Connection(TransportDelegate):
         reconnect: bool = True,
         hass=None,
         name: str = None,
+        candidates_callback=None,
     ):
         self.reconnect = reconnect
         self.adapter = adapter
         self.address = address
         self.name = name or address
         self.hass = hass
+        self.candidates_callback = candidates_callback
+        self.connected_source = None
+        self.last_error = None
         self.connection_status = ConnectionStatus.DISCONNECTED
         self.last_info = None
         self.transport = Transport(self)
