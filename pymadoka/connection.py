@@ -143,7 +143,12 @@ class Connection(TransportDelegate):
         self._paired = False
         logger.info(f"Disconnected {self.address}")
         if self.reconnect and not self._is_starting and not self._closing:
-            asyncio.create_task(self.start())
+            # Fire-and-forget reconnect goes through _background_start so a
+            # typed error can never become an unhandled task exception; keep
+            # a reference so the task cannot be GC'd mid-flight.
+            t = asyncio.create_task(self._background_start())
+            self._bg_tasks.add(t)
+            t.add_done_callback(self._bg_tasks.discard)
 
     async def cleanup(self):
         self._closing = True
@@ -185,11 +190,28 @@ class Connection(TransportDelegate):
                     # caller) instead of looping forever.
                     logger.debug(f"Connection task cancelled for {self.address}")
                     raise
+                except MadokaError:
+                    # Classified failure: status/last_error were already stamped
+                    # where it was raised. Typed errors are the caller's signal —
+                    # never swallow.
+                    raise
                 except Exception as e:
                     logger.error(f"Unexpected error in connection loop for {self.address}: {e}")
                     self.connection_status = ConnectionStatus.ABORTED
         finally:
             self._is_starting = False
+
+    async def _background_start(self):
+        """start() wrapper for fire-and-forget reconnects: never raises.
+
+        A typed error during an automatic reconnect has no caller to signal;
+        it is recorded in last_error (done at the raise site) and logged, and
+        the next explicit start() from the integration will retry/report.
+        """
+        try:
+            await self.start()
+        except MadokaError as e:
+            logger.warning(f"Background reconnect for {self.address} gave up: {e}")
 
     async def _connect_via_ha(self):
         """Connect via HA, trying candidate paths in order when available.
@@ -384,7 +406,11 @@ class Connection(TransportDelegate):
             # (the BRC1H accepts a single central) — detach and disconnect it.
             client, self.client = self.client, None
             if client is not None:
-                asyncio.get_event_loop().create_task(self._disconnect_client(client))
+                # Same _bg_tasks anchoring as the candidate loop: keep a
+                # reference so the disconnect task cannot be GC'd mid-flight.
+                t = asyncio.create_task(self._disconnect_client(client))
+                self._bg_tasks.add(t)
+                t.add_done_callback(self._bg_tasks.discard)
             raise
         except Exception as e:
             logger.error(f"Failed to connect to {self.address}: {e}")

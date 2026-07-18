@@ -166,3 +166,42 @@ async def test_mixed_failures_keep_retrying_instead_of_pairing_required():
     assert conn.connection_status is not ConnectionStatus.ABORTED
     assert conn.last_error is None
     assert conn._retry_delay == 10.0  # backoff doubled for the next round
+
+
+@pytest.mark.asyncio
+async def test_start_propagates_pairing_required():
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=make_client(pair_exc=AUTH_FAIL))), \
+         patch("pymadoka.connection.asyncio.sleep", AsyncMock()):
+        conn = make_connection([make_device("PROXY_A")])
+        with pytest.raises(PairingRequiredError):
+            await conn.start()
+
+
+@pytest.mark.asyncio
+async def test_start_propagates_device_unreachable():
+    conn = make_connection([])
+    with pytest.raises(DeviceUnreachableError):
+        await conn.start()
+
+
+@pytest.mark.asyncio
+async def test_background_start_swallows_typed_errors(caplog):
+    conn = make_connection([])
+    await conn._background_start()          # must NOT raise
+    assert isinstance(conn.last_error, DeviceUnreachableError)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_of_live_client_schedules_background_reconnect():
+    # on_disconnect must route through _background_start (not bare start())
+    # so a typed error in the reconnect can never become an unhandled
+    # task exception.
+    conn = make_connection([])
+    live = make_client()
+    conn.client = live
+    conn.reconnect = True
+    with patch.object(Connection, "_background_start", AsyncMock()) as bg:
+        conn.on_disconnect(live)
+        await asyncio.sleep(0)   # let the created task run
+    bg.assert_awaited_once()
