@@ -154,6 +154,15 @@ class Connection(TransportDelegate):
         self._closing = True
         self.reconnect = False
         self._paired = False
+        # Quiesce background tasks BEFORE disconnecting: an in-flight
+        # _background_start that already passed the _closing check could
+        # otherwise complete a connect AFTER the disconnect below, leaving
+        # the BRC1H's single central slot occupied after an entry unload.
+        tasks = [t for t in self._bg_tasks if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self.client:
             try:
                 await self.client.stop_notify(NOTIFY_CHAR_UUID)
@@ -163,6 +172,14 @@ class Connection(TransportDelegate):
         self.connection_status = ConnectionStatus.DISCONNECTED
 
     async def start(self):
+        """Run the connection loop until connected or aborted.
+
+        Typed MadokaError subclasses (PairingRequiredError,
+        DeviceUnreachableError) propagate to the caller. If a (background)
+        start is already running, this call returns immediately without
+        raising; callers relying on typed-error signaling should check
+        connection_status / last_error afterwards.
+        """
         if self._is_starting:
             logger.debug(f"start() already running for {self.address}, skipping")
             return
@@ -399,6 +416,7 @@ class Connection(TransportDelegate):
                 return
 
             self.connection_status = ConnectionStatus.CONNECTED
+            self.last_error = None  # invariant: None after a successful connect
             self._retry_delay = 5.0  # reset backoff on successful connect
             logger.info(f"Connected to {self.address} ({self.name}) via bleak_retry_connector")
         except CancelledError:

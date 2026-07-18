@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -187,9 +188,11 @@ async def test_start_propagates_device_unreachable():
 
 @pytest.mark.asyncio
 async def test_background_start_swallows_typed_errors(caplog):
+    caplog.set_level(logging.WARNING)
     conn = make_connection([])
     await conn._background_start()          # must NOT raise
     assert isinstance(conn.last_error, DeviceUnreachableError)
+    assert "gave up" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -205,3 +208,40 @@ async def test_disconnect_of_live_client_schedules_background_reconnect():
         conn.on_disconnect(live)
         await asyncio.sleep(0)   # let the created task run
     bg.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_single_path_success_clears_last_error():
+    # last_error invariant: "None after a successful connect" must hold on
+    # the legacy single-device path too. Concrete path: PairingRequiredError
+    # recorded -> user pairs -> retry degrades to the single path (broken
+    # candidates_callback) -> connects fine -> the stale typed error must
+    # not survive for the HA coordinator to read.
+    conn = Connection(
+        "00:11:22:33:44:55", adapter=None, reconnect=False,
+        hass=object(), candidates_callback=None,
+    )
+    conn.last_error = DeviceUnreachableError("00:11:22:33:44:55")
+    with patch("homeassistant.components.bluetooth.async_ble_device_from_address",
+               return_value=make_device(None)), \
+         patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=make_client())), \
+         patch_settle_sleep():
+        await conn._connect_via_ha_single()
+    assert conn.connection_status is ConnectionStatus.CONNECTED
+    assert conn.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_quiesces_background_tasks():
+    # cleanup() must cancel/await in-flight background tasks so a reconnect
+    # racing past the _closing check cannot complete a connect AFTER cleanup
+    # disconnected the client (single-central BRC1H: that would block the
+    # next entry setup).
+    conn = make_connection([])
+    slow = asyncio.create_task(asyncio.sleep(30))  # real sleep, must be cancelled
+    conn._bg_tasks.add(slow)
+    slow.add_done_callback(conn._bg_tasks.discard)
+    await conn.cleanup()
+    assert slow.done()
+    assert all(t.done() for t in conn._bg_tasks)
