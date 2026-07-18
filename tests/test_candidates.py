@@ -249,6 +249,54 @@ async def test_single_path_success_clears_last_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_candidate_connect_uses_single_attempt_per_path():
+    # Field incident 2026-07-18: with max_attempts=2, habluetooth's client
+    # wrapper rescores ALL paths on every connect attempt, so a transient
+    # failure of attempt 1 (which also bumps that scanner's failure count)
+    # made attempt 2 silently fail over to the strongest-RSSI — unbonded —
+    # proxy, which then held the BRC1H's single central slot through SMP
+    # auth timeouts. One establish_connection call must make exactly one
+    # path decision; retries/failover belong to the candidate loop.
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=make_client())) as est, patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        await conn._connect_via_ha()
+    assert est.await_args.kwargs.get("max_attempts") == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_resets_connected_source():
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=make_client())), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        await conn._connect_via_ha()
+    assert conn.connected_source == "PROXY_A"
+    await conn.cleanup()
+    assert conn.connected_source is None
+
+
+@pytest.mark.asyncio
+async def test_live_disconnect_resets_connected_source():
+    conn = make_connection([])
+    live = make_client()
+    conn.client = live
+    conn.connected_source = "PROXY_A"
+    conn.on_disconnect(live)
+    assert conn.connected_source is None
+
+
+@pytest.mark.asyncio
+async def test_stale_disconnect_keeps_connected_source():
+    # A failed candidate's late disconnect callback must not clear the
+    # source of the path that IS serving us.
+    conn = make_connection([])
+    conn.client = make_client()
+    conn.connected_source = "PROXY_A"
+    conn.on_disconnect(make_client())  # stale client, not self.client
+    assert conn.connected_source == "PROXY_A"
+
+
+@pytest.mark.asyncio
 async def test_cleanup_quiesces_background_tasks():
     # cleanup() must cancel/await in-flight background tasks so a reconnect
     # racing past the _closing check cannot complete a connect AFTER cleanup

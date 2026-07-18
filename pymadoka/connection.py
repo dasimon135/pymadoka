@@ -136,6 +136,8 @@ class Connection(TransportDelegate):
         if client is not self.client:
             return
         self.connection_status = ConnectionStatus.DISCONNECTED
+        # The path that served us is gone; never let callers read a stale one.
+        self.connected_source = None
         # Re-pair on the next connect: the bond is stored per BLE adapter/proxy,
         # so a reconnect may land on a peer that still needs to authenticate.
         # Skipping pair() there fails every GATT op with "Insufficient
@@ -170,6 +172,7 @@ class Connection(TransportDelegate):
                 pass
             await self.client.disconnect()
         self.connection_status = ConnectionStatus.DISCONNECTED
+        self.connected_source = None
 
     async def start(self):
         """Run the connection loop until connected or aborted.
@@ -274,12 +277,25 @@ class Connection(TransportDelegate):
             client = None
             pair_timed_out = False
             try:
+                # max_attempts=1: exactly ONE path decision per call. Field
+                # incident 2026-07-18: with max_attempts=2, a transient failure
+                # of attempt 1 let the retry silently fail over to the
+                # strongest-RSSI — unbonded — proxy, which then held the
+                # BRC1H's single central slot through 30s SMP auth timeouts
+                # (device unreachable >20 min). Under HA, habluetooth's
+                # HaBleakClientWrapper keeps only the ADDRESS of the
+                # BLEDevice and rescores every path (RSSI + failure counts)
+                # on each connect attempt, so any retry inside
+                # establish_connection can hop paths. (bleak-retry-connector's
+                # ble_device_callback parameter is vestigial in 4.6.0 —
+                # declared but never read — so it cannot pin the path.)
+                # Retries and failover belong to THIS loop.
                 client = await establish_connection(
                     BleakClient,
                     ble_device,
                     self.address,
                     disconnected_callback=self.on_disconnect,
-                    max_attempts=2,
+                    max_attempts=1,
                 )
                 # Establish the authenticated bond BEFORE any GATT operation
                 # (see _connect_via_ha_single). Pair on every path attempt:
