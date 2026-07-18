@@ -33,7 +33,7 @@ class Controller:
         set_point (Feature): Feature used to control the fan speed
         clean_filter_indicator (Feature): Feature used to control the fan speed
     """
-    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None):
+    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None):
         """Inits the controller with the device address.
 
         Args:
@@ -41,6 +41,9 @@ class Controller:
             adapter (str): Bluetooth adapter for the connection
             hass: Home Assistant instance (enables bleak_retry_connector path)
             name (str): User-friendly display name for the device
+            candidates_callback: callback returning an ordered list of BLEDevice
+                candidates (preferred path first); when provided, the HA connect
+                path tries them in order instead of letting HA pick by RSSI.
         """
 
         if adapter is None:
@@ -48,7 +51,14 @@ class Controller:
 
         self.status = {}
         self.info = {}
-        self.connection = Connection(address, adapter=adapter, reconnect=reconnect, hass=hass, name=name)
+        self.connection = Connection(
+            address,
+            adapter=adapter,
+            reconnect=reconnect,
+            hass=hass,
+            name=name,
+            candidates_callback=candidates_callback,
+        )
 
         self.fan_speed = FanSpeed(self.connection)
         self.operation_mode = OperationMode(self.connection)

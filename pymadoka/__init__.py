@@ -1,6 +1,7 @@
 from .controller import Controller
-from .connection import Connection, discover_devices, force_device_disconnect
+from .connection import Connection, ConnectionStatus, discover_devices, force_device_disconnect
 from .connection import ConnectionException
+from .errors import MadokaError, PairingRequiredError, DeviceUnreachableError
 from .feature import Feature, FeatureStatus, NotImplementedException
 from .features.clean_filter import CleanFilterIndicator, CleanFilterIndicatorStatus, ResetCleanFilterTimer, ResetCleanFilterTimerStatus
 from .features.eye_brightness import EyeBrightness, EyeBrightnessStatus
@@ -16,7 +17,11 @@ from .features.temperatures import Temperatures, TemperaturesStatus
 __all__ = [
     "Controller",
     "Connection",
+    "ConnectionStatus",
     "ConnectionException",
+    "MadokaError",
+    "PairingRequiredError",
+    "DeviceUnreachableError",
     "discover_devices",
     "force_device_disconnect",
     "Feature",

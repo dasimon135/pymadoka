@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 # package stays `pymadoka`. Also forces HA to install fresh: HA never
 # reinstalls a git requirement whose dist name is already present.
 name = "pymadoka-ng"
-version = "0.3.5"
+version = "0.3.6"
 description = "A library to control Daikin BRC1H (Madoka) thermostats over Bluetooth LE"
 readme = "README.md"
 license = { text = "MIT" }
@@ -55,3 +55,7 @@ include = ["pymadoka*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Explicit -p: the suite runs with PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so the
+# asyncio plugin must be loaded here instead of via entry-point autoload.
+addopts = "-p pytest_asyncio.plugin"
+asyncio_mode = "strict"

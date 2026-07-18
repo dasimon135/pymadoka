@@ -30,4 +30,10 @@ jobs:
         run: ruff check pymadoka tests
 
       - name: Test
+        # Autoload disabled so the plugin set is hermetic and identical to
+        # local dev runs: pyproject's addopts loads pytest_asyncio.plugin
+        # explicitly, and autoloading it a second time via its entry point
+        # fails with "Plugin already registered under a different name".
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: python -m pytest tests/ -v
