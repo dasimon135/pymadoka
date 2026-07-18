@@ -55,3 +55,7 @@ include = ["pymadoka*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Explicit -p: the suite runs with PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so the
+# asyncio plugin must be loaded here instead of via entry-point autoload.
+addopts = "-p pytest_asyncio.plugin"
+asyncio_mode = "strict"

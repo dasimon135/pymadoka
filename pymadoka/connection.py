@@ -7,7 +7,12 @@ from enum import Enum
 from bleak import BleakClient, BleakScanner
 from typing import Dict
 
-from pymadoka.errors import MadokaError
+from pymadoka.errors import (
+    DeviceUnreachableError,
+    MadokaError,
+    PairingRequiredError,
+    is_pairing_error,
+)
 from pymadoka.transport import Transport, TransportDelegate
 from pymadoka.consts import NOTIFY_CHAR_UUID, WRITE_CHAR_UUID, SEND_MAX_TRIES
 
@@ -68,8 +73,8 @@ class Connection(TransportDelegate):
         candidates_callback: callback returning an ordered list of BLEDevice
             candidates (preferred path first); when provided, the HA connect
             path tries them in order instead of letting HA pick by RSSI.
-        connected_source: source MAC of the proxy that served the current
-            connection, None when not connected or via local adapter.
+        connected_source: source MAC of the scanner/proxy that served the
+            current connection (None when unknown).
         last_error: last classified MadokaError, None after a successful
             connect.
     """
@@ -176,6 +181,122 @@ class Connection(TransportDelegate):
             self._is_starting = False
 
     async def _connect_via_ha(self):
+        """Connect via HA, trying candidate paths in order when available.
+
+        Without a candidates_callback (or when it fails) this degrades to the
+        legacy single-device path where HA picks one BLEDevice by RSSI.
+
+        With candidates: try each BLEDevice in order (preferred path first).
+        A pairing/bond rejection on one path falls through to the next; if
+        EVERY path rejects the bond, raise PairingRequiredError. An empty
+        candidate list raises DeviceUnreachableError. Mixed/transient
+        failures return after a backoff so the outer start() loop retries.
+        """
+        if self.candidates_callback is None:
+            return await self._connect_via_ha_single()
+        try:
+            candidates = list(self.candidates_callback())
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "candidates_callback failed; falling back to single-device path")
+            return await self._connect_via_ha_single()
+        from bleak_retry_connector import establish_connection
+
+        if not candidates:
+            self.last_error = DeviceUnreachableError(self.address)
+            self.connection_status = ConnectionStatus.ABORTED
+            raise self.last_error
+
+        tried = []
+        auth_failures = 0
+        for ble_device in candidates:
+            source = None
+            if isinstance(getattr(ble_device, "details", None), dict):
+                source = ble_device.details.get("source")
+            tried.append(source)
+
+            # Only adopt the advertised name when the caller did not provide
+            # one (self.name defaults to the address).
+            if getattr(ble_device, "name", None) and self.name == self.address:
+                self.name = ble_device.name
+
+            client = None
+            pair_timed_out = False
+            try:
+                client = await establish_connection(
+                    BleakClient,
+                    ble_device,
+                    self.address,
+                    disconnected_callback=self.on_disconnect,
+                    max_attempts=2,
+                )
+                # Establish the authenticated bond BEFORE any GATT operation
+                # (see _connect_via_ha_single). Pair on every path attempt:
+                # the bond is stored per BLE adapter/proxy, so a different
+                # candidate may still need to authenticate.
+                try:
+                    await asyncio.wait_for(client.pair(), timeout=8.0)
+                except TimeoutError:
+                    # Marker-only classifier contract (is_pairing_error):
+                    # only this call site knows a timeout means the
+                    # confirmation prompt sat unanswered on the thermostat
+                    # screen — flag it as an auth failure instead of
+                    # round-tripping through error text.
+                    pair_timed_out = True
+                    raise
+                await client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
+                # Let the fresh bond and notification subscription settle
+                # before the first command; proxied notifications can
+                # otherwise be dropped and the chunked response fails to
+                # reassemble.
+                await asyncio.sleep(1.5)
+                if not client.is_connected:
+                    raise ConnectionException(
+                        f"{self.address} dropped the link right after connecting")
+                self.client = client
+                self._paired = True
+                self.connected_source = source
+                self.connection_status = ConnectionStatus.CONNECTED
+                self.last_error = None
+                self._retry_delay = 5.0
+                logger.info(
+                    f"Connected to {self.address} ({self.name}) via "
+                    f"{source or 'local adapter'}")
+                return
+            except CancelledError:
+                # Caller timeout cancelled us mid-connect: don't leak a live
+                # link (the BRC1H accepts a single central) — disconnect it.
+                if client is not None:
+                    asyncio.get_event_loop().create_task(self._disconnect_client(client))
+                raise
+            except Exception as e:  # noqa: BLE001
+                if client is not None:
+                    asyncio.get_event_loop().create_task(self._disconnect_client(client))
+                if pair_timed_out or is_pairing_error(e):
+                    auth_failures += 1
+                    detail = (
+                        pairing_failure_message(self.address, e)
+                        if pair_timed_out else e
+                    )
+                    logger.info(
+                        f"{self.address}: path via {source or 'local adapter'} "
+                        f"needs pairing, trying next path: {detail}")
+                else:
+                    logger.warning(
+                        f"{self.address}: path via {source or 'local adapter'} "
+                        f"failed: {e}")
+
+        if auth_failures == len(candidates):
+            self.last_error = PairingRequiredError(self.address, tried_sources=tried)
+            self.connection_status = ConnectionStatus.ABORTED
+            raise self.last_error
+        # Mixed/transient failures: keep the outer start() loop retrying as
+        # today, with the same backoff as the single-device path.
+        logger.info(f"Retrying {self.address} in {self._retry_delay:.0f}s")
+        await asyncio.sleep(self._retry_delay)
+        self._retry_delay = min(self._retry_delay * 2, 60.0)
+
+    async def _connect_via_ha_single(self):
         """Connect using HA's BLE device registry and bleak_retry_connector."""
         from homeassistant.components.bluetooth import async_ble_device_from_address
         from bleak_retry_connector import establish_connection
