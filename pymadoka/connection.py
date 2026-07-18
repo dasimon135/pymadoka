@@ -7,13 +7,14 @@ from enum import Enum
 from bleak import BleakClient, BleakScanner
 from typing import Dict
 
+from pymadoka.errors import MadokaError
 from pymadoka.transport import Transport, TransportDelegate
 from pymadoka.consts import NOTIFY_CHAR_UUID, WRITE_CHAR_UUID, SEND_MAX_TRIES
 
 logger = logging.getLogger(__name__)
 
-class ConnectionException(Exception):
-    """Exceptions are documented in the same way as classes."""
+class ConnectionException(MadokaError):
+    """Generic connection/protocol failure (legacy name, kept for compat)."""
     pass
 
 
