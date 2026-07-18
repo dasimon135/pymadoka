@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -210,8 +212,23 @@ async def test_disconnect_of_live_client_schedules_background_reconnect():
     bg.assert_awaited_once()
 
 
+def _install_fake_ha_bluetooth(monkeypatch, ble_device):
+    # The suite must run WITHOUT homeassistant installed (library contract:
+    # the import in _connect_via_ha_single is function-local for exactly that
+    # reason), so stub the module hierarchy instead of patch("homeassistant...")
+    # which would import the real package. monkeypatch restores sys.modules
+    # afterwards, so a real HA install on the dev machine is not clobbered.
+    bt = types.ModuleType("homeassistant.components.bluetooth")
+    bt.async_ble_device_from_address = lambda hass, address, connectable=True: ble_device
+    components = types.ModuleType("homeassistant.components")
+    ha = types.ModuleType("homeassistant")
+    monkeypatch.setitem(sys.modules, "homeassistant", ha)
+    monkeypatch.setitem(sys.modules, "homeassistant.components", components)
+    monkeypatch.setitem(sys.modules, "homeassistant.components.bluetooth", bt)
+
+
 @pytest.mark.asyncio
-async def test_single_path_success_clears_last_error():
+async def test_single_path_success_clears_last_error(monkeypatch):
     # last_error invariant: "None after a successful connect" must hold on
     # the legacy single-device path too. Concrete path: PairingRequiredError
     # recorded -> user pairs -> retry degrades to the single path (broken
@@ -222,9 +239,8 @@ async def test_single_path_success_clears_last_error():
         hass=object(), candidates_callback=None,
     )
     conn.last_error = DeviceUnreachableError("00:11:22:33:44:55")
-    with patch("homeassistant.components.bluetooth.async_ble_device_from_address",
-               return_value=make_device(None)), \
-         patch("bleak_retry_connector.establish_connection",
+    _install_fake_ha_bluetooth(monkeypatch, make_device(None))
+    with patch("bleak_retry_connector.establish_connection",
                AsyncMock(return_value=make_client())), \
          patch_settle_sleep():
         await conn._connect_via_ha_single()
