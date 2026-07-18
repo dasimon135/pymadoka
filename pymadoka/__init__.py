@@ -1,5 +1,5 @@
 from .controller import Controller
-from .connection import Connection, discover_devices, force_device_disconnect
+from .connection import Connection, ConnectionStatus, discover_devices, force_device_disconnect
 from .connection import ConnectionException
 from .errors import MadokaError, PairingRequiredError, DeviceUnreachableError
 from .feature import Feature, FeatureStatus, NotImplementedException
@@ -17,6 +17,7 @@ from .features.temperatures import Temperatures, TemperaturesStatus
 __all__ = [
     "Controller",
     "Connection",
+    "ConnectionStatus",
     "ConnectionException",
     "MadokaError",
     "PairingRequiredError",

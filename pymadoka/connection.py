@@ -406,7 +406,7 @@ class Connection(TransportDelegate):
                 # before the first command; proxied notifications can
                 # otherwise be dropped and the chunked response fails to
                 # reassemble.
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(SETTLE_DELAY)
 
             if not self.client.is_connected:
                 # The device dropped the link during pair/subscribe/settle;
