@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.3.7
+
+- **One path decision per connection attempt**: the candidate loop now calls
+  `establish_connection` with `max_attempts=1`. Under Home Assistant, the
+  bluetooth client wrapper rescores every available path (RSSI + failure
+  counts) on each connect attempt, so a multi-attempt call could silently
+  fail over to a stronger-signal — possibly unbonded — proxy mid-call
+  (observed in the field: an unbonded proxy captured the BRC1H's single
+  central slot through SMP auth timeouts, keeping the thermostat unreachable
+  for over 20 minutes). Retries and the failover decision now stay with the
+  candidate loop. Note: `bleak-retry-connector`'s `ble_device_callback`
+  parameter is vestigial in 4.6.0 (declared but never read) and cannot pin
+  the path.
+- **`connected_source` is reset on disconnect and cleanup** so callers never
+  read a stale path after the connection that used it is gone.
+
 ## v0.3.6
 
 - **Typed errors**: new `MadokaError` base class; `PairingRequiredError`
