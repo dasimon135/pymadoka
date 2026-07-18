@@ -18,6 +18,10 @@ from pymadoka.consts import NOTIFY_CHAR_UUID, WRITE_CHAR_UUID, SEND_MAX_TRIES
 
 logger = logging.getLogger(__name__)
 
+# Delay after pairing + notification subscription before declaring the
+# connection usable (lets the fresh bond and subscription settle).
+SETTLE_DELAY = 1.5
+
 class ConnectionException(MadokaError):
     """Generic connection/protocol failure (legacy name, kept for compat)."""
     pass
@@ -108,6 +112,9 @@ class Connection(TransportDelegate):
         self._paired = False
         self._operation_lock = asyncio.Lock()
         self._retry_delay = 5.0
+        # Fire-and-forget cleanup tasks: keep a reference so they cannot be
+        # garbage-collected mid-flight.
+        self._bg_tasks: set = set()
 
     def discard_request(self, cmd_id: int, cmd_response) -> None:
         """Remove a pending response future from the request queue.
@@ -124,6 +131,10 @@ class Connection(TransportDelegate):
             pass
 
     def on_disconnect(self, client: BleakClient):
+        # A failed candidate's client is never assigned to self.client; its
+        # late disconnect callback must not clobber the live connection state.
+        if client is not self.client:
+            return
         self.connection_status = ConnectionStatus.DISCONNECTED
         # Re-pair on the next connect: the bond is stored per BLE adapter/proxy,
         # so a reconnect may land on a peer that still needs to authenticate.
@@ -198,7 +209,8 @@ class Connection(TransportDelegate):
             candidates = list(self.candidates_callback())
         except Exception:  # noqa: BLE001
             logger.exception(
-                "candidates_callback failed; falling back to single-device path")
+                f"candidates_callback failed for {self.address}; "
+                "falling back to single-device path")
             return await self._connect_via_ha_single()
         from bleak_retry_connector import establish_connection
 
@@ -207,13 +219,13 @@ class Connection(TransportDelegate):
             self.connection_status = ConnectionStatus.ABORTED
             raise self.last_error
 
-        tried = []
+        tried_sources = []
         auth_failures = 0
         for ble_device in candidates:
             source = None
             if isinstance(getattr(ble_device, "details", None), dict):
                 source = ble_device.details.get("source")
-            tried.append(source)
+            tried_sources.append(source)
 
             # Only adopt the advertised name when the caller did not provide
             # one (self.name defaults to the address).
@@ -249,8 +261,11 @@ class Connection(TransportDelegate):
                 # before the first command; proxied notifications can
                 # otherwise be dropped and the chunked response fails to
                 # reassemble.
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(SETTLE_DELAY)
                 if not client.is_connected:
+                    # Deliberate divergence from the single path (which
+                    # returns-with-warning): raising moves on to the NEXT
+                    # candidate instead of retrying the same pick.
                     raise ConnectionException(
                         f"{self.address} dropped the link right after connecting")
                 self.client = client
@@ -266,12 +281,20 @@ class Connection(TransportDelegate):
             except CancelledError:
                 # Caller timeout cancelled us mid-connect: don't leak a live
                 # link (the BRC1H accepts a single central) — disconnect it.
+                # Fire-and-forget (we must re-raise promptly), but keep a
+                # reference so the task cannot be GC'd mid-flight.
                 if client is not None:
-                    asyncio.get_event_loop().create_task(self._disconnect_client(client))
+                    t = asyncio.create_task(self._disconnect_client(client))
+                    self._bg_tasks.add(t)
+                    t.add_done_callback(self._bg_tasks.discard)
                 raise
             except Exception as e:  # noqa: BLE001
+                # Disconnect INLINE before trying the next candidate: a
+                # still-open failed link on this single-central device would
+                # make every later path fail too, misclassifying an
+                # all-paths-need-pairing situation as mixed/transient.
                 if client is not None:
-                    asyncio.get_event_loop().create_task(self._disconnect_client(client))
+                    await self._disconnect_client(client)
                 if pair_timed_out or is_pairing_error(e):
                     auth_failures += 1
                     detail = (
@@ -287,7 +310,7 @@ class Connection(TransportDelegate):
                         f"failed: {e}")
 
         if auth_failures == len(candidates):
-            self.last_error = PairingRequiredError(self.address, tried_sources=tried)
+            self.last_error = PairingRequiredError(self.address, tried_sources=tried_sources)
             self.connection_status = ConnectionStatus.ABORTED
             raise self.last_error
         # Mixed/transient failures: keep the outer start() loop retrying as

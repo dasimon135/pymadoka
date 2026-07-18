@@ -6,7 +6,7 @@ import pytest
 from bleak.exc import BleakError
 
 from pymadoka import Controller
-from pymadoka.connection import Connection
+from pymadoka.connection import Connection, ConnectionStatus
 from pymadoka.errors import PairingRequiredError, DeviceUnreachableError
 
 
@@ -52,14 +52,8 @@ def make_connection(candidates):
 
 
 def patch_settle_sleep():
-    """Mock out the 1.5s post-pairing settle delay to keep the suite fast."""
+    """Mock out settle/backoff sleeps to keep the suite fast."""
     return patch("pymadoka.connection.asyncio.sleep", AsyncMock())
-
-
-async def drain_pending_tasks():
-    """Yield to the loop so scheduled disconnect tasks can run."""
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -82,7 +76,6 @@ async def test_auth_failure_falls_through_to_next_candidate():
         conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
         await conn._connect_via_ha()
     assert conn.connected_source == "PROXY_B"
-    await drain_pending_tasks()
     bad.disconnect.assert_awaited()  # failed path is not left half-open
 
 
@@ -97,7 +90,6 @@ async def test_pair_timeout_counts_as_auth_failure():
         conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
         await conn._connect_via_ha()
     assert conn.connected_source == "PROXY_B"
-    await drain_pending_tasks()
 
 
 @pytest.mark.asyncio
@@ -110,7 +102,6 @@ async def test_all_candidates_auth_fail_raises_pairing_required():
             await conn._connect_via_ha()
     assert ei.value.tried_sources == ["PROXY_A", "PROXY_B"]
     assert isinstance(conn.last_error, PairingRequiredError)
-    await drain_pending_tasks()
 
 
 @pytest.mark.asyncio
@@ -133,3 +124,45 @@ async def test_broken_candidates_callback_degrades_to_single_path():
                       AsyncMock()) as single:
         await conn._connect_via_ha()
     single.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stale_disconnect_callback_does_not_clobber_live_connection():
+    # Every candidate's client carries on_disconnect as disconnected_callback.
+    # A failed candidate's late disconnect callback must NOT stamp
+    # DISCONNECTED over a later candidate's live connection nor spawn a
+    # competing reconnect (the BRC1H accepts a single central).
+    bad = make_client(pair_exc=AUTH_FAIL)
+    good = make_client()
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(side_effect=[bad, good])), patch_settle_sleep():
+        conn = Connection(
+            "00:11:22:33:44:55", adapter=None, reconnect=True,
+            hass=object(),
+            candidates_callback=lambda: [make_device("PROXY_A"),
+                                         make_device("PROXY_B")],
+        )
+        await conn._connect_via_ha()
+    assert conn.connection_status is ConnectionStatus.CONNECTED
+
+    with patch.object(Connection, "start", AsyncMock()) as start_mock:
+        conn.on_disconnect(bad)  # stale callback from the failed candidate
+        await asyncio.sleep(0)
+    assert conn.connection_status is ConnectionStatus.CONNECTED
+    assert conn._paired is True
+    start_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mixed_failures_keep_retrying_instead_of_pairing_required():
+    # Auth failure on one path + transient failure on another is NOT proof
+    # that pairing is required: leave the outer start() loop retrying.
+    bad = make_client(pair_exc=AUTH_FAIL)
+    transient = BleakError("Device disconnected")
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(side_effect=[bad, transient])), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
+        await conn._connect_via_ha()  # must not raise
+    assert conn.connection_status is not ConnectionStatus.ABORTED
+    assert conn.last_error is None
+    assert conn._retry_delay == 10.0  # backoff doubled for the next round
