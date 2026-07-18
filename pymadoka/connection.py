@@ -24,6 +24,21 @@ class ConnectionStatus(Enum):
     ABORTED = 3
 
 
+def pairing_failure_message(address: str, exc: BaseException) -> str:
+    """Human-actionable log message for a failed pairing attempt.
+
+    str(TimeoutError()) is empty, and a pairing timeout almost always means
+    the confirmation prompt is sitting unanswered on the thermostat screen —
+    say so instead of ending the message with a bare colon.
+    """
+    if isinstance(exc, TimeoutError):
+        return (
+            f"Pairing with {address} timed out — confirm the pairing prompt "
+            "on the thermostat screen (required once per Bluetooth proxy)"
+        )
+    return f"Pairing with {address} did not complete: {exc}"
+
+
 async def discover_devices(timeout=5, adapter="hci0", force_disconnect=True):
     """Trigger a bluetooth devices discovery on the adapter for the timeout interval."""
     scanner = BleakScanner(adapter=adapter)
@@ -184,7 +199,7 @@ class Connection(TransportDelegate):
                 except Exception as pair_err:  # noqa: BLE001
                     # Surface loudly: an actually-refused bond means every
                     # later GATT exchange will be silently ignored.
-                    logger.warning(f"Pairing with {self.address} did not complete: {pair_err}")
+                    logger.warning(pairing_failure_message(self.address, pair_err))
 
             await self.client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
 
