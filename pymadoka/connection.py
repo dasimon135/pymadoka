@@ -31,6 +31,14 @@ SETTLE_DELAY = 1.5
 # thermostat screen and repeated prompts jam the BRC1H's SMP stack.
 PAIRING_TIMEOUT_ROUNDS = 3
 
+# Budget for a single pair() call. Sized for the common case — re-encrypting an
+# existing bond — because an automatic reconnect must not sit on the BRC1H's
+# single central slot. A REAL pairing is numeric-comparison: the user compares
+# a 6-digit code with the thermostat screen and accepts there, which no 8s
+# budget can accommodate. Callers that know a human is standing at the device
+# (a manual "pair now" action) raise pair_timeout for the duration.
+DEFAULT_PAIR_TIMEOUT = 8.0
+
 class ConnectionException(MadokaError):
     """Generic connection/protocol failure (legacy name, kept for compat)."""
     pass
@@ -102,8 +110,11 @@ class Connection(TransportDelegate):
         hass=None,
         name: str = None,
         candidates_callback=None,
+        pair_timeout: float = DEFAULT_PAIR_TIMEOUT,
     ):
         self.reconnect = reconnect
+        # Public and mutable: callers widen it around a user-driven pairing.
+        self.pair_timeout = pair_timeout
         self.adapter = adapter
         self.address = address
         self.name = name or address
@@ -322,7 +333,8 @@ class Connection(TransportDelegate):
                 # the bond is stored per BLE adapter/proxy, so a different
                 # candidate may still need to authenticate.
                 try:
-                    await asyncio.wait_for(client.pair(), timeout=8.0)
+                    await asyncio.wait_for(
+                        client.pair(), timeout=self.pair_timeout)
                 except TimeoutError:
                     # Marker-only classifier contract (is_pairing_error):
                     # only this call site knows a timeout means the
@@ -455,7 +467,8 @@ class Connection(TransportDelegate):
             just_paired = False
             if not self._paired:
                 try:
-                    await asyncio.wait_for(self.client.pair(), timeout=8.0)
+                    await asyncio.wait_for(
+                        self.client.pair(), timeout=self.pair_timeout)
                     self._paired = True
                     just_paired = True
                 except Exception as pair_err:  # noqa: BLE001

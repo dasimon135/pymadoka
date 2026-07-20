@@ -6,7 +6,11 @@ import logging
 from typing import Union, Dict
 from enum import Enum
 from pymadoka.feature import Feature, NotImplementedException
-from pymadoka.connection import Connection, ConnectionException
+from pymadoka.connection import (
+    DEFAULT_PAIR_TIMEOUT,
+    Connection,
+    ConnectionException,
+)
 from pymadoka.features.fanspeed import FanSpeed
 from pymadoka.features.operationmode import OperationMode
 from pymadoka.features.power import PowerState
@@ -33,7 +37,7 @@ class Controller:
         set_point (Feature): Feature used to control the fan speed
         clean_filter_indicator (Feature): Feature used to control the fan speed
     """
-    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None):
+    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None, pair_timeout: float = DEFAULT_PAIR_TIMEOUT):
         """Inits the controller with the device address.
 
         Args:
@@ -44,6 +48,9 @@ class Controller:
             candidates_callback: callback returning an ordered list of BLEDevice
                 candidates (preferred path first); when provided, the HA connect
                 path tries them in order instead of letting HA pick by RSSI.
+            pair_timeout (float): budget for one pair() call. Raise it around a
+                user-driven pairing: numeric comparison needs a human to accept
+                on the thermostat screen, which the default cannot accommodate.
         """
 
         if adapter is None:
@@ -58,6 +65,7 @@ class Controller:
             hass=hass,
             name=name,
             candidates_callback=candidates_callback,
+            pair_timeout=pair_timeout,
         )
 
         self.fan_speed = FanSpeed(self.connection)
