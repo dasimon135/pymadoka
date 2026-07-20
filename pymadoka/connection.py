@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 # connection usable (lets the fresh bond and subscription settle).
 SETTLE_DELAY = 1.5
 
+# Consecutive rounds in which EVERY candidate path timed out while pairing
+# before we conclude the bond is really missing. A timeout is ambiguous: it
+# also happens when an existing bond's SMP encryption is merely slow (several
+# thermostats reconnecting through the same proxies after a restart). Only an
+# explicit authentication rejection is immediate proof; timeouts must survive
+# this many rounds, because each wrong accusation puts a pairing prompt on the
+# thermostat screen and repeated prompts jam the BRC1H's SMP stack.
+PAIRING_TIMEOUT_ROUNDS = 3
+
 class ConnectionException(MadokaError):
     """Generic connection/protocol failure (legacy name, kept for compat)."""
     pass
@@ -112,9 +121,17 @@ class Connection(TransportDelegate):
         self._paired = False
         self._operation_lock = asyncio.Lock()
         self._retry_delay = 5.0
+        # Consecutive rounds where every path timed out while pairing; reset
+        # by any successful connect. See PAIRING_TIMEOUT_ROUNDS.
+        self._pairing_timeout_rounds = 0
         # Fire-and-forget cleanup tasks: keep a reference so they cannot be
         # garbage-collected mid-flight.
         self._bg_tasks: set = set()
+
+    @property
+    def pairing_timeout_rounds(self) -> int:
+        """Consecutive rounds where every path timed out while pairing."""
+        return self._pairing_timeout_rounds
 
     def discard_request(self, cmd_id: int, cmd_response) -> None:
         """Remove a pending response future from the request queue.
@@ -262,7 +279,10 @@ class Connection(TransportDelegate):
             raise self.last_error
 
         tried_sources = []
-        auth_failures = 0
+        # Split by evidence strength: a rejection proves the bond is gone, a
+        # timeout only suggests it (see PAIRING_TIMEOUT_ROUNDS).
+        auth_rejections = 0
+        pair_timeouts = 0
         for ble_device in candidates:
             source = None
             if isinstance(getattr(ble_device, "details", None), dict):
@@ -329,6 +349,10 @@ class Connection(TransportDelegate):
                 self.connection_status = ConnectionStatus.CONNECTED
                 self.last_error = None
                 self._retry_delay = 5.0
+                # Earlier timeouts were transient after all — this very path
+                # just authenticated. Forget them, or an unlucky streak
+                # spread over hours would eventually accuse a healthy bond.
+                self._pairing_timeout_rounds = 0
                 logger.info(
                     f"Connected to {self.address} ({self.name}) via "
                     f"{source or 'local adapter'}")
@@ -350,24 +374,48 @@ class Connection(TransportDelegate):
                 # all-paths-need-pairing situation as mixed/transient.
                 if client is not None:
                     await self._disconnect_client(client)
-                if pair_timed_out or is_pairing_error(e):
-                    auth_failures += 1
-                    detail = (
-                        pairing_failure_message(self.address, e)
-                        if pair_timed_out else e
-                    )
+                if pair_timed_out:
+                    pair_timeouts += 1
+                    logger.info(
+                        f"{self.address}: pairing via "
+                        f"{source or 'local adapter'} timed out, trying next "
+                        f"path: {pairing_failure_message(self.address, e)}")
+                elif is_pairing_error(e):
+                    auth_rejections += 1
                     logger.info(
                         f"{self.address}: path via {source or 'local adapter'} "
-                        f"needs pairing, trying next path: {detail}")
+                        f"refused the bond, trying next path: {e}")
                 else:
                     logger.warning(
                         f"{self.address}: path via {source or 'local adapter'} "
                         f"failed: {e}")
 
-        if auth_failures == len(candidates):
+        every_path_failed_auth = (
+            auth_rejections + pair_timeouts == len(candidates)
+        )
+        if every_path_failed_auth and auth_rejections:
+            # At least one path actively refused: unambiguous, report now.
+            self._pairing_timeout_rounds = 0
             self.last_error = PairingRequiredError(self.address, tried_sources=tried_sources)
             self.connection_status = ConnectionStatus.ABORTED
             raise self.last_error
+
+        if every_path_failed_auth:
+            # Timeouts only. Ambiguous between "prompt sitting unanswered" and
+            # "existing bond encrypting slowly under load", so require a streak
+            # before accusing — a wrong accusation costs a spurious pairing
+            # prompt on the thermostat and, repeated, jams its SMP stack.
+            self._pairing_timeout_rounds += 1
+            if self._pairing_timeout_rounds >= PAIRING_TIMEOUT_ROUNDS:
+                self.last_error = PairingRequiredError(
+                    self.address, tried_sources=tried_sources)
+                self.connection_status = ConnectionStatus.ABORTED
+                raise self.last_error
+            logger.info(
+                f"{self.address}: every path timed out while pairing "
+                f"(round {self._pairing_timeout_rounds}/{PAIRING_TIMEOUT_ROUNDS}); "
+                "treating as transient and retrying")
+
         # Mixed/transient failures: keep the outer start() loop retrying as
         # today, with the same backoff as the single-device path.
         logger.info(f"Retrying {self.address} in {self._retry_delay:.0f}s")

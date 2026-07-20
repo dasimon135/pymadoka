@@ -83,9 +83,11 @@ async def test_auth_failure_falls_through_to_next_candidate():
 
 
 @pytest.mark.asyncio
-async def test_pair_timeout_counts_as_auth_failure():
-    # Task 2 narrowed is_pairing_error to marker-only: a TimeoutError raised BY
-    # pair() must be treated as a pairing failure AT THE CALL SITE.
+async def test_pair_timeout_falls_through_to_next_candidate():
+    # A TimeoutError raised BY pair() is recognised at the call site (marker
+    # -only is_pairing_error cannot see it) and moves on to the next path.
+    # Whether an all-timeout round means "unbonded" is decided separately —
+    # see tests/test_pairing_escalation.py.
     slow = make_client(pair_exc=TimeoutError())
     good = make_client()
     with patch("bleak_retry_connector.establish_connection",
