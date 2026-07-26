@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.3.10
+
+- **`PairingRequiredError` now says WHY it was raised.** The same class was
+  raised from two epistemically different places with the same attributes and
+  a byte-identical message claiming the device *"refused the authenticated
+  bond"*: a path that explicitly rejected the bond (proof — a human must
+  re-pair), and every path merely timing out for `PAIRING_TIMEOUT_ROUNDS`
+  rounds (an inference — on a bonded path a pairing timeout means congestion).
+  Consumers could only tell them apart through an undocumented side channel.
+  New attributes:
+  - `reason`: `"rejected"` (default, so existing constructor calls keep their
+    meaning) or `"timeout_streak"`.
+  - `timeout_rounds`: consecutive all-timed-out rounds behind the verdict;
+    `0` for a rejection.
+  - `evidence`: per-source verdict (`"rejected"` / `"timeout"` /
+    `"transient"`), so a consumer can attribute a refusal to a SPECIFIC proxy
+    even when several paths were tried.
+
+  The `"timeout_streak"` message no longer claims a refusal: it reports that
+  pairing did not complete within the budget on any path and suggests a
+  re-pair only if it persists.
+- **The ambiguity streak is reset at the streak verdict too.** Only the
+  rejection branch reset it, so after an accusation the counter stayed past
+  the threshold and the very next classified-timeout round re-raised
+  immediately (`4 >= 3`) — including the user-initiated retry that follows,
+  which deserves a fresh budget.
+- **The fallback single-device path forgives the streak on success.** Only the
+  candidate loop did, so a device that recovered through the fallback kept a
+  stale streak armed.
+- **Proven rejections survive a mixed round.** `every_path_failed_auth` was
+  computed from this round alone, so two proven rejections plus one
+  transiently-failing third proxy took the transient branch and the proof was
+  discarded — one flapping proxy could postpone a legitimate conclusion
+  forever. A source that explicitly refused the bond is now remembered until
+  it authenticates again. Conservative by construction: only PROVEN
+  rejections are retained, never timeouts and never plain transient failures,
+  so it never becomes easier to convict a healthy device.
+- **Public streak API**, so consumers stop reaching for
+  `_pairing_timeout_rounds`: `reset_pairing_timeout_rounds()`,
+  `resume_pairing_timeout_rounds(rounds)` (restore a streak carried across
+  Connection rebuilds, clamped to >= 0) alongside the existing
+  `pairing_timeout_rounds` property, plus a `rejected_sources` view.
+
 ## v0.3.7
 
 - **One path decision per connection attempt**: the candidate loop now calls

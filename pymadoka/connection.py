@@ -135,14 +135,52 @@ class Connection(TransportDelegate):
         # Consecutive rounds where every path timed out while pairing; reset
         # by any successful connect. See PAIRING_TIMEOUT_ROUNDS.
         self._pairing_timeout_rounds = 0
+        # Sources that have EXPLICITLY refused the authenticated bond, kept
+        # across rounds. A rejection is durable proof — a bond does not come
+        # back without a human — so it must not be thrown away just because a
+        # different path failed transiently in the same round: a single
+        # flapping proxy could otherwise postpone a legitimate conclusion
+        # forever. Cleared per source the moment that source authenticates.
+        self._rejected_sources: set = set()
         # Fire-and-forget cleanup tasks: keep a reference so they cannot be
         # garbage-collected mid-flight.
         self._bg_tasks: set = set()
 
     @property
     def pairing_timeout_rounds(self) -> int:
-        """Consecutive rounds where every path timed out while pairing."""
+        """Consecutive rounds where every path timed out while pairing.
+
+        Read-only view of the ambiguity streak (see PAIRING_TIMEOUT_ROUNDS).
+        Reset to 0 by any successful connect and by the streak verdict itself,
+        so it must NOT be used to tell the two PairingRequiredError kinds
+        apart — read `PairingRequiredError.reason` for that.
+        """
         return self._pairing_timeout_rounds
+
+    def reset_pairing_timeout_rounds(self) -> None:
+        """Forget the ambiguity streak.
+
+        For consumers that know the situation changed outside the library —
+        a user re-paired, a proxy was added — and do not want stale rounds
+        counting toward the next verdict.
+        """
+        self._pairing_timeout_rounds = 0
+
+    def resume_pairing_timeout_rounds(self, rounds: int) -> None:
+        """Restore a streak carried across Connection rebuilds.
+
+        A consumer that recreates the Connection (Home Assistant rebuilds it
+        on every config entry retry) would otherwise restart the count at zero
+        every time and never reach PAIRING_TIMEOUT_ROUNDS. Values are clamped
+        to >= 0; this is the supported way to seed the counter, so nothing
+        needs to touch the private attribute.
+        """
+        self._pairing_timeout_rounds = max(0, int(rounds))
+
+    @property
+    def rejected_sources(self) -> frozenset:
+        """Sources that explicitly refused the bond and have not since worked."""
+        return frozenset(self._rejected_sources)
 
     def discard_request(self, cmd_id: int, cmd_response) -> None:
         """Remove a pending response future from the request queue.
@@ -290,10 +328,11 @@ class Connection(TransportDelegate):
             raise self.last_error
 
         tried_sources = []
-        # Split by evidence strength: a rejection proves the bond is gone, a
-        # timeout only suggests it (see PAIRING_TIMEOUT_ROUNDS).
-        auth_rejections = 0
-        pair_timeouts = 0
+        # Per-path verdict for THIS round, aligned with tried_sources:
+        # "rejected" | "timeout" | "transient". Split by evidence strength: a
+        # rejection proves the bond is gone, a timeout only suggests it (see
+        # PAIRING_TIMEOUT_ROUNDS).
+        verdicts: list = []
         for ble_device in candidates:
             source = None
             if isinstance(getattr(ble_device, "details", None), dict):
@@ -365,6 +404,9 @@ class Connection(TransportDelegate):
                 # just authenticated. Forget them, or an unlucky streak
                 # spread over hours would eventually accuse a healthy bond.
                 self._pairing_timeout_rounds = 0
+                # Same for a past refusal ON THIS PATH: it just proved it
+                # holds a bond, so the retained proof is stale and must go.
+                self._rejected_sources.discard(source)
                 logger.info(
                     f"Connected to {self.address} ({self.name}) via "
                     f"{source or 'local adapter'}")
@@ -387,28 +429,49 @@ class Connection(TransportDelegate):
                 if client is not None:
                     await self._disconnect_client(client)
                 if pair_timed_out:
-                    pair_timeouts += 1
+                    verdicts.append("timeout")
                     logger.info(
                         f"{self.address}: pairing via "
                         f"{source or 'local adapter'} timed out, trying next "
                         f"path: {pairing_failure_message(self.address, e)}")
                 elif is_pairing_error(e):
-                    auth_rejections += 1
+                    verdicts.append("rejected")
+                    self._rejected_sources.add(source)
                     logger.info(
                         f"{self.address}: path via {source or 'local adapter'} "
                         f"refused the bond, trying next path: {e}")
+                elif source in self._rejected_sources:
+                    # This path refused the bond in an earlier round and has
+                    # not authenticated since, so it is still known to hold
+                    # none — whatever it failed with this time. Retaining the
+                    # proof is what stops one flapping proxy from postponing a
+                    # legitimate conclusion forever. Conservative by
+                    # construction: only a PROVEN refusal is ever retained,
+                    # never a timeout and never a plain transient failure.
+                    verdicts.append("rejected")
+                    logger.info(
+                        f"{self.address}: path via {source or 'local adapter'} "
+                        f"failed ({e}) and already refused the bond earlier; "
+                        "keeping that verdict")
                 else:
+                    verdicts.append("transient")
                     logger.warning(
                         f"{self.address}: path via {source or 'local adapter'} "
                         f"failed: {e}")
 
+        # Later duplicates win; sources are normally unique per round.
+        evidence = dict(zip(tried_sources, verdicts))
+        auth_rejections = verdicts.count("rejected")
+        pair_timeouts = verdicts.count("timeout")
         every_path_failed_auth = (
             auth_rejections + pair_timeouts == len(candidates)
         )
         if every_path_failed_auth and auth_rejections:
             # At least one path actively refused: unambiguous, report now.
             self._pairing_timeout_rounds = 0
-            self.last_error = PairingRequiredError(self.address, tried_sources=tried_sources)
+            self.last_error = PairingRequiredError(
+                self.address, tried_sources=tried_sources,
+                reason="rejected", timeout_rounds=0, evidence=evidence)
             self.connection_status = ConnectionStatus.ABORTED
             raise self.last_error
 
@@ -419,8 +482,17 @@ class Connection(TransportDelegate):
             # prompt on the thermostat and, repeated, jams its SMP stack.
             self._pairing_timeout_rounds += 1
             if self._pairing_timeout_rounds >= PAIRING_TIMEOUT_ROUNDS:
+                rounds = self._pairing_timeout_rounds
+                # Reset like the rejection branch does. Without it the counter
+                # stays past the threshold, so the very next classified-timeout
+                # round re-raises immediately (4 >= 3) — including the
+                # user-initiated retry that follows the accusation, which
+                # deserves a fresh budget of PAIRING_TIMEOUT_ROUNDS.
+                self._pairing_timeout_rounds = 0
                 self.last_error = PairingRequiredError(
-                    self.address, tried_sources=tried_sources)
+                    self.address, tried_sources=tried_sources,
+                    reason="timeout_streak", timeout_rounds=rounds,
+                    evidence=evidence)
                 self.connection_status = ConnectionStatus.ABORTED
                 raise self.last_error
             logger.info(
@@ -495,6 +567,11 @@ class Connection(TransportDelegate):
             self.connection_status = ConnectionStatus.CONNECTED
             self.last_error = None  # invariant: None after a successful connect
             self._retry_delay = 5.0  # reset backoff on successful connect
+            # A success forgives the ambiguity streak here exactly as it does
+            # in the candidate loop: a device that recovers through the
+            # fallback path would otherwise keep a stale streak armed and be
+            # convicted by the next single timed-out round.
+            self._pairing_timeout_rounds = 0
             logger.info(f"Connected to {self.address} ({self.name}) via bleak_retry_connector")
         except CancelledError:
             # Caller timeout cancelled us mid-connect: don't leak a live link
