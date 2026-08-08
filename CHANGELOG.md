@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.3.11
+
+- **`connected_source` and the per-path evidence now name the path Home
+  Assistant actually used, not the candidate we offered.** habluetooth's
+  `HaBleakClientWrapper` keeps only the *address* of the `BLEDevice` handed to
+  `establish_connection` and re-picks a scanner by RSSI on every connect, so
+  the candidate has always been an intention rather than a fact — and the two
+  disagree in practice (a thermostat was observed pairing through a proxy that
+  had been filtered out of its candidate list entirely). Recording the
+  intention as fact is what let a proxy that never carried a session be marked
+  as holding a bond, and a refusal be charged to a proxy that was never in the
+  conversation. The wrapper publishes the winning scanner once the link is up,
+  which is exactly when a bond rejection is raised — by `client.pair()`, after
+  `establish_connection` has already returned — so the case that matters is
+  attributable.
+
+- **A failure to connect at all is now charged to nobody.** Before a link
+  exists nothing names the path, so `PairingRequiredError.evidence` carries a
+  `None` key for that attempt and `_rejected_sources` records nothing.
+  `tried_sources` still lists what was aimed at, because that is the only thing
+  worth telling a human. Consumers already skip falsy sources — but one that
+  falls back to `tried_sources` when `evidence` names no proven path must stop
+  doing so, or it will re-introduce the guess.
+
+  Deliberate consequence: retained refusal proof can only be applied to a path
+  that produced a link, so a device whose connections fail *before*
+  establishing reaches a rejection verdict more slowly. Consumers are expected
+  to carry a verdict-independent brake for that case.
+
 ## v0.3.10
 
 - **`PairingRequiredError` now says WHY it was raised.** The same class was

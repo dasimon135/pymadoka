@@ -311,3 +311,108 @@ async def test_cleanup_quiesces_background_tasks():
     await conn.cleanup()
     assert slow.done()
     assert all(t.done() for t in conn._bg_tasks)
+
+
+# ---------------------------------------------------------------------------
+# The path HA actually used is not the candidate we offered (#53)
+# ---------------------------------------------------------------------------
+#
+# habluetooth's HaBleakClientWrapper keeps only the ADDRESS of the BLEDevice
+# and re-picks a scanner by RSSI on every connect, so the candidate says what
+# we intended and nothing more. Measured in the field 2026-08-08: a thermostat
+# paired through a proxy that had been filtered out of its candidate list.
+#
+# Recording the intention as fact is what marks a proxy that never carried a
+# session as holding a bond, and charges a refusal to a proxy that was never in
+# the conversation. The wrapper publishes the winning scanner once the link is
+# up, which is exactly when a bond rejection is raised (by pair(), after
+# establish_connection returned) — so the important case IS attributable.
+
+
+def make_client_on(real_source, pair_exc=None):
+    """A client whose wrapper reports which scanner actually won."""
+    client = make_client(pair_exc=pair_exc)
+    client._connected_scanner = SimpleNamespace(source=real_source)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_connected_source_is_the_path_ha_actually_used():
+    good = make_client_on("PROXY_B")
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=good)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        await conn._connect_via_ha()
+    assert conn.connected_source == "PROXY_B"
+
+
+@pytest.mark.asyncio
+async def test_a_success_acquits_the_path_that_really_served_it():
+    """The retained refusal must be cleared on the real path, not the aimed-at one."""
+    good = make_client_on("PROXY_B")
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=good)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        conn._rejected_sources.add("PROXY_B")
+        await conn._connect_via_ha()
+    assert "PROXY_B" not in conn._rejected_sources
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_is_charged_to_the_real_path():
+    bad = make_client_on("PROXY_B", pair_exc=AUTH_FAIL)
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=bad)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        with pytest.raises(PairingRequiredError) as excinfo:
+            await conn._connect_via_ha()
+    assert excinfo.value.evidence == {"PROXY_B": "rejected"}
+    assert conn._rejected_sources == {"PROXY_B"}
+    # ...and the human-facing list names the real path too.
+    assert excinfo.value.tried_sources == ["PROXY_B"]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_to_connect_at_all_is_charged_to_nobody():
+    """No link, no scanner, no proof — the round cannot say which path refused.
+
+    The verdict still forms (the evidence CLASS is known), but the source is
+    not, and a falsy source is one consumers must skip. Guessing here is
+    exactly how a healthy proxy loses its bond.
+    """
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(side_effect=AUTH_FAIL)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        with pytest.raises(PairingRequiredError) as excinfo:
+            await conn._connect_via_ha()
+    assert excinfo.value.evidence == {None: "rejected"}
+    assert conn._rejected_sources == set()
+    # The message still names what we aimed at — useless as evidence, but the
+    # only thing worth telling a human.
+    assert excinfo.value.tried_sources == ["PROXY_A"]
+
+
+@pytest.mark.asyncio
+async def test_retained_proof_follows_the_real_path():
+    """A non-pairing failure on a path already proven bondless stays 'rejected'."""
+    bad = make_client_on("PROXY_B", pair_exc=BleakError("boom"))
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=bad)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        conn._rejected_sources.add("PROXY_B")
+        with pytest.raises(PairingRequiredError) as excinfo:
+            await conn._connect_via_ha()
+    assert excinfo.value.evidence == {"PROXY_B": "rejected"}
+
+
+def test_connected_path_source_falls_back_when_the_backend_is_silent():
+    """Local adapters and plain BleakClients have no wrapper to ask."""
+    from pymadoka.connection import connected_path_source
+
+    assert connected_path_source(SimpleNamespace(), "PROXY_A") == "PROXY_A"
+    assert connected_path_source(None, "PROXY_A") == "PROXY_A"
+    # A Mock attribute is not a source: only a real string counts.
+    assert connected_path_source(
+        SimpleNamespace(_connected_scanner=SimpleNamespace(source=object())),
+        "PROXY_A",
+    ) == "PROXY_A"
