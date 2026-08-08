@@ -64,8 +64,33 @@ def patch_settle_sleep():
 
 
 def patch_connect(clients):
+    """Model production: a live client names the path it was carried on.
+
+    Under HA the wrapper publishes the winning scanner once the link is up, and
+    attribution now requires that name — falling back to the offered candidate
+    would be the guess this library stopped making. These tests are about
+    VERDICT logic, so the named path is the one that was offered; divergence
+    between the two has its own tests in test_candidates.py.
+
+    A client that already names a scanner is left alone, and an exception in
+    the list still models a failure to connect at all (no client, no name,
+    nothing attributable).
+    """
+    queue = list(clients)
+
+    def _connect(_cls, ble_device, *args, **kwargs):
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        named = getattr(getattr(item, "_connected_scanner", None), "source", None)
+        if not isinstance(named, str):
+            details = getattr(ble_device, "details", None)
+            source = details.get("source") if isinstance(details, dict) else None
+            item._connected_scanner = SimpleNamespace(source=source)
+        return item
+
     return patch(
-        "bleak_retry_connector.establish_connection", AsyncMock(side_effect=clients)
+        "bleak_retry_connector.establish_connection", AsyncMock(side_effect=_connect)
     )
 
 
@@ -217,23 +242,35 @@ async def test_single_device_path_success_resets_the_streak(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_proven_rejection_survives_a_flapping_third_path():
-    """2 rejections + 1 transient failure must not erase the rejections.
+    """2 rejections + 1 flap must not erase the rejections.
 
-    With the evidence discarded every round, a proxy that fails transiently
-    (and differently) each time postpones the legitimate conclusion forever.
+    With the evidence discarded every round, a proxy that fails differently
+    each time postpones the legitimate conclusion forever.
+
+    The flap here CONNECTS and then fails, which is what makes the round
+    readable: the path is only knowable once a link exists (see #53), so this
+    is the shape in which retained proof can still be applied.
     """
     devices = [make_device("PROXY_A"), make_device("PROXY_B"), make_device("PROXY_C")]
 
-    # Round 1: A and B refuse, C fails transiently -> no verdict yet.
-    round1 = [make_client(pair_exc=AUTH_FAIL), make_client(pair_exc=AUTH_FAIL), TRANSIENT]
+    # Round 1: A and B refuse, C connects then drops -> no verdict yet.
+    round1 = [
+        make_client(pair_exc=AUTH_FAIL),
+        make_client(pair_exc=AUTH_FAIL),
+        make_client(pair_exc=BleakError("Device disconnected")),
+    ]
     with patch_connect(round1), patch_settle_sleep():
         conn = make_connection(devices)
         await conn._connect_via_ha()
     assert conn.last_error is None
 
-    # Round 2: A and B fail transiently now, C refuses. The retained proof for
+    # Round 2: A and B connect then drop, C refuses. The retained proof for
     # A and B means the round as a whole is an authentication failure.
-    round2 = [TRANSIENT, TRANSIENT, make_client(pair_exc=AUTH_FAIL)]
+    round2 = [
+        make_client(pair_exc=BleakError("Device disconnected")),
+        make_client(pair_exc=BleakError("Device disconnected")),
+        make_client(pair_exc=AUTH_FAIL),
+    ]
     with patch_connect(round2), patch_settle_sleep(), pytest.raises(
         PairingRequiredError
     ) as excinfo:
@@ -244,6 +281,42 @@ async def test_a_proven_rejection_survives_a_flapping_third_path():
     assert err.evidence == {
         "PROXY_A": "rejected", "PROXY_B": "rejected", "PROXY_C": "rejected",
     }
+
+
+@pytest.mark.asyncio
+async def test_retained_proof_needs_a_link_to_be_applied():
+    """A failure to connect at all cannot inherit a past path's guilt.
+
+    Deliberate consequence of #53. Before a link exists nothing names the path,
+    so charging the candidate we aimed at would be a guess — and the guess is
+    the whole defect: it convicts proxies that were never in the round.
+
+    The cost is real and accepted: a house where connections often fail BEFORE
+    establishing reaches a rejection verdict more slowly. It is not left
+    unprotected — the consumer's verdict-independent cadence brake engages on
+    consecutive failed polls whether or not a verdict ever forms, which is
+    exactly why that brake exists.
+    """
+    devices = [make_device("PROXY_A"), make_device("PROXY_B")]
+
+    # Round 1: both refuse, proven on a live link.
+    with patch_connect(
+        [make_client(pair_exc=AUTH_FAIL), make_client(pair_exc=AUTH_FAIL)]
+    ), patch_settle_sleep():
+        conn = make_connection(devices)
+        with pytest.raises(PairingRequiredError):
+            await conn._connect_via_ha()
+
+    # Round 2: neither path even connects. No verdict: the round has nothing
+    # to say about which proxy it failed against. Clear the round-1 error
+    # first — it is only reset by a successful connect, so leaving it would
+    # make a stale verdict look like a fresh one.
+    conn.last_error = None
+    with patch_connect([TRANSIENT, TRANSIENT]), patch_settle_sleep():
+        await conn._connect_via_ha()
+    assert conn.last_error is None
+    # The earlier proof is untouched, ready for the next round that gets a link.
+    assert conn._rejected_sources == {"PROXY_A", "PROXY_B"}
 
 
 @pytest.mark.asyncio

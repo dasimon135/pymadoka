@@ -66,6 +66,46 @@ def pairing_failure_message(address: str, exc: BaseException) -> str:
     return f"Pairing with {address} did not complete: {exc}"
 
 
+def connected_path_source(client) -> str | None:
+    """The proxy that ACTUALLY carried this link, or None if unknowable.
+
+    Returning None rather than quietly substituting the candidate is the whole
+    point: a caller that cannot tell "the two agree" from "I could not read the
+    real one" has a fix that may be doing nothing at all while every log line
+    and every test still looks healthy. Callers fall back explicitly, and say
+    so at DEBUG when they do.
+
+    Under Home Assistant the BLEDevice handed to establish_connection is
+    advisory only. habluetooth's HaBleakClientWrapper keeps just the ADDRESS
+    (`self.__address = address_or_ble_device.address`) and throws the device
+    away; connect() then calls _async_get_best_available_backend_and_device(),
+    which re-sorts every scanner that sees the address by RSSI and
+    score_connection_path(). So the candidate we picked says what we INTENDED,
+    never what happened — and the two disagree in practice (daikin_madoka #53:
+    a thermostat paired through a proxy that had been filtered out of its
+    candidate list entirely).
+
+    Recording the intention as fact is what lets a proxy that never carried a
+    session be marked as holding a bond, and a refusal be charged to a proxy
+    that was not even in the conversation.
+
+    Once the link is up the wrapper publishes the winning scanner, so the truth
+    is readable exactly when it matters most: a bond REJECTION is raised by
+    client.pair(), i.e. after establish_connection has already succeeded and
+    this attribute is set. (A failure to connect at all leaves nothing to read,
+    and that case genuinely cannot be attributed to a path — callers must not
+    pretend otherwise.)
+
+    Every read is guarded: the attribute is private, and other backends (a
+    local adapter, a plain BleakClient in a test) do not have it.
+    """
+    scanner = getattr(client, "_connected_scanner", None)
+    source = getattr(scanner, "source", None)
+    if isinstance(source, str) and source:
+        return source
+    return None
+
+
 async def discover_devices(timeout=5, adapter="hci0", force_disconnect=True):
     """Trigger a bluetooth devices discovery on the adapter for the timeout interval."""
     scanner = BleakScanner(adapter=adapter)
@@ -333,11 +373,21 @@ class Connection(TransportDelegate):
         # rejection proves the bond is gone, a timeout only suggests it (see
         # PAIRING_TIMEOUT_ROUNDS).
         verdicts: list = []
+        # Same order as verdicts, but only holds a source when the path is
+        # PROVEN — i.e. a link was established and the wrapper named the
+        # scanner that carried it. tried_sources is the human-facing list and
+        # falls back to the candidate we offered, which is fine for a message
+        # and unusable as evidence: charging a refusal to a proxy we merely
+        # aimed at is the bug this split exists to prevent (#53). None here
+        # means "this round cannot say which path failed", and consumers
+        # already skip falsy sources.
+        evidence_sources: list = []
         for ble_device in candidates:
             source = None
             if isinstance(getattr(ble_device, "details", None), dict):
                 source = ble_device.details.get("source")
             tried_sources.append(source)
+            evidence_sources.append(None)
 
             # Only adopt the advertised name when the caller did not provide
             # one (self.name defaults to the address).
@@ -396,7 +446,28 @@ class Connection(TransportDelegate):
                         f"{self.address} dropped the link right after connecting")
                 self.client = client
                 self._paired = True
-                self.connected_source = source
+                # The path HA actually used, which is not necessarily the
+                # candidate we offered (see connected_path_source). Everything
+                # downstream — the caller's bonded-proxy bookkeeping, the
+                # retained-refusal set, this round's evidence — has to key off
+                # the real one or it describes a connection that never existed.
+                real = connected_path_source(client)
+                if real is None:
+                    # Not a failure to connect — a failure to KNOW. Say so, or
+                    # a backend that never names its scanner degrades to the
+                    # old guess-as-fact behaviour without a trace anywhere.
+                    logger.debug(
+                        f"{self.address}: the backend did not name the path it "
+                        f"used; falling back to the offered "
+                        f"{source or 'local adapter'}")
+                elif real != source:
+                    logger.debug(
+                        f"{self.address}: offered {source or 'local adapter'} "
+                        f"but HA connected via {real}")
+                actual = source if real is None else real
+                self.connected_source = actual
+                tried_sources[-1] = actual
+                evidence_sources[-1] = actual
                 self.connection_status = ConnectionStatus.CONNECTED
                 self.last_error = None
                 self._retry_delay = 5.0
@@ -406,10 +477,10 @@ class Connection(TransportDelegate):
                 self._pairing_timeout_rounds = 0
                 # Same for a past refusal ON THIS PATH: it just proved it
                 # holds a bond, so the retained proof is stale and must go.
-                self._rejected_sources.discard(source)
+                self._rejected_sources.discard(actual)
                 logger.info(
                     f"Connected to {self.address} ({self.name}) via "
-                    f"{source or 'local adapter'}")
+                    f"{actual or 'local adapter'}")
                 return
             except CancelledError:
                 # Caller timeout cancelled us mid-connect: don't leak a live
@@ -422,6 +493,23 @@ class Connection(TransportDelegate):
                     t.add_done_callback(self._bg_tasks.discard)
                 raise
             except Exception as e:  # noqa: BLE001
+                # Read the real path BEFORE tearing the link down: a bond
+                # REJECTION is raised by client.pair(), which only runs once
+                # establish_connection has succeeded, so this is exactly the
+                # failure we CAN attribute. A failure to connect at all leaves
+                # client None and the path genuinely unknown — proven stays
+                # False and nothing is charged to anyone.
+                real = connected_path_source(client)
+                proven = real is not None
+                if client is not None and not proven:
+                    logger.debug(
+                        f"{self.address}: a link existed but the backend did "
+                        f"not name it; this failure is charged to nobody")
+                # For the log line and the human-facing tried_sources only.
+                actual = real if proven else source
+                if proven:
+                    tried_sources[-1] = actual
+                    evidence_sources[-1] = actual
                 # Disconnect INLINE before trying the next candidate: a
                 # still-open failed link on this single-central device would
                 # make every later path fail too, misclassifying an
@@ -432,15 +520,18 @@ class Connection(TransportDelegate):
                     verdicts.append("timeout")
                     logger.info(
                         f"{self.address}: pairing via "
-                        f"{source or 'local adapter'} timed out, trying next "
+                        f"{actual or 'local adapter'} timed out, trying next "
                         f"path: {pairing_failure_message(self.address, e)}")
                 elif is_pairing_error(e):
                     verdicts.append("rejected")
-                    self._rejected_sources.add(source)
+                    # Retained proof is per PATH, so it may only be recorded
+                    # against a path we actually reached.
+                    if proven:
+                        self._rejected_sources.add(actual)
                     logger.info(
-                        f"{self.address}: path via {source or 'local adapter'} "
+                        f"{self.address}: path via {actual or 'local adapter'} "
                         f"refused the bond, trying next path: {e}")
-                elif source in self._rejected_sources:
+                elif proven and actual in self._rejected_sources:
                     # This path refused the bond in an earlier round and has
                     # not authenticated since, so it is still known to hold
                     # none — whatever it failed with this time. Retaining the
@@ -450,17 +541,20 @@ class Connection(TransportDelegate):
                     # never a timeout and never a plain transient failure.
                     verdicts.append("rejected")
                     logger.info(
-                        f"{self.address}: path via {source or 'local adapter'} "
+                        f"{self.address}: path via {actual or 'local adapter'} "
                         f"failed ({e}) and already refused the bond earlier; "
                         "keeping that verdict")
                 else:
                     verdicts.append("transient")
                     logger.warning(
-                        f"{self.address}: path via {source or 'local adapter'} "
+                        f"{self.address}: path via {actual or 'local adapter'} "
                         f"failed: {e}")
 
-        # Later duplicates win; sources are normally unique per round.
-        evidence = dict(zip(tried_sources, verdicts))
+        # Keyed on the PROVEN path, not the one we aimed at. Unattributable
+        # attempts collapse under the single None key: consumers skip falsy
+        # sources, so an unknown path cannot cost any proxy its bond. Later
+        # duplicates win; proven sources are normally unique per round.
+        evidence = dict(zip(evidence_sources, verdicts))
         auth_rejections = verdicts.count("rejected")
         pair_timeouts = verdicts.count("timeout")
         every_path_failed_auth = (
