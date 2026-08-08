@@ -405,14 +405,20 @@ async def test_retained_proof_follows_the_real_path():
     assert excinfo.value.evidence == {"PROXY_B": "rejected"}
 
 
-def test_connected_path_source_falls_back_when_the_backend_is_silent():
-    """Local adapters and plain BleakClients have no wrapper to ask."""
+def test_connected_path_source_says_None_when_the_backend_is_silent():
+    """Local adapters and plain BleakClients have no wrapper to ask.
+
+    None, never the candidate: a caller that cannot distinguish "unknown" from
+    "agrees with what we offered" cannot tell a working fix from a dead one.
+    """
     from pymadoka.connection import connected_path_source
 
-    assert connected_path_source(SimpleNamespace(), "PROXY_A") == "PROXY_A"
-    assert connected_path_source(None, "PROXY_A") == "PROXY_A"
+    assert connected_path_source(SimpleNamespace()) is None
+    assert connected_path_source(None) is None
     # A Mock attribute is not a source: only a real string counts.
     assert connected_path_source(
-        SimpleNamespace(_connected_scanner=SimpleNamespace(source=object())),
-        "PROXY_A",
-    ) == "PROXY_A"
+        SimpleNamespace(_connected_scanner=SimpleNamespace(source=object()))
+    ) is None
+    assert connected_path_source(
+        SimpleNamespace(_connected_scanner=SimpleNamespace(source="PROXY_B"))
+    ) == "PROXY_B"

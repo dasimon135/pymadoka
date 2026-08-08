@@ -64,8 +64,33 @@ def patch_settle_sleep():
 
 
 def patch_connect(clients):
+    """Model production: a live client names the path it was carried on.
+
+    Under HA the wrapper publishes the winning scanner once the link is up, and
+    attribution now requires that name — falling back to the offered candidate
+    would be the guess this library stopped making. These tests are about
+    VERDICT logic, so the named path is the one that was offered; divergence
+    between the two has its own tests in test_candidates.py.
+
+    A client that already names a scanner is left alone, and an exception in
+    the list still models a failure to connect at all (no client, no name,
+    nothing attributable).
+    """
+    queue = list(clients)
+
+    def _connect(_cls, ble_device, *args, **kwargs):
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        named = getattr(getattr(item, "_connected_scanner", None), "source", None)
+        if not isinstance(named, str):
+            details = getattr(ble_device, "details", None)
+            source = details.get("source") if isinstance(details, dict) else None
+            item._connected_scanner = SimpleNamespace(source=source)
+        return item
+
     return patch(
-        "bleak_retry_connector.establish_connection", AsyncMock(side_effect=clients)
+        "bleak_retry_connector.establish_connection", AsyncMock(side_effect=_connect)
     )
 
 

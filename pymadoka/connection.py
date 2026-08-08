@@ -66,8 +66,14 @@ def pairing_failure_message(address: str, exc: BaseException) -> str:
     return f"Pairing with {address} did not complete: {exc}"
 
 
-def connected_path_source(client, intended: str | None) -> str | None:
-    """The proxy that ACTUALLY carried this link, not the one we asked for.
+def connected_path_source(client) -> str | None:
+    """The proxy that ACTUALLY carried this link, or None if unknowable.
+
+    Returning None rather than quietly substituting the candidate is the whole
+    point: a caller that cannot tell "the two agree" from "I could not read the
+    real one" has a fix that may be doing nothing at all while every log line
+    and every test still looks healthy. Callers fall back explicitly, and say
+    so at DEBUG when they do.
 
     Under Home Assistant the BLEDevice handed to establish_connection is
     advisory only. habluetooth's HaBleakClientWrapper keeps just the ADDRESS
@@ -91,14 +97,13 @@ def connected_path_source(client, intended: str | None) -> str | None:
     pretend otherwise.)
 
     Every read is guarded: the attribute is private, and other backends (a
-    local adapter, a plain BleakClient in a test) do not have it. Falling back
-    to `intended` keeps the previous behaviour rather than losing the source.
+    local adapter, a plain BleakClient in a test) do not have it.
     """
     scanner = getattr(client, "_connected_scanner", None)
     source = getattr(scanner, "source", None)
     if isinstance(source, str) and source:
         return source
-    return intended
+    return None
 
 
 async def discover_devices(timeout=5, adapter="hci0", force_disconnect=True):
@@ -446,7 +451,20 @@ class Connection(TransportDelegate):
                 # downstream — the caller's bonded-proxy bookkeeping, the
                 # retained-refusal set, this round's evidence — has to key off
                 # the real one or it describes a connection that never existed.
-                actual = connected_path_source(client, source)
+                real = connected_path_source(client)
+                if real is None:
+                    # Not a failure to connect — a failure to KNOW. Say so, or
+                    # a backend that never names its scanner degrades to the
+                    # old guess-as-fact behaviour without a trace anywhere.
+                    logger.debug(
+                        f"{self.address}: the backend did not name the path it "
+                        f"used; falling back to the offered "
+                        f"{source or 'local adapter'}")
+                elif real != source:
+                    logger.debug(
+                        f"{self.address}: offered {source or 'local adapter'} "
+                        f"but HA connected via {real}")
+                actual = source if real is None else real
                 self.connected_source = actual
                 tried_sources[-1] = actual
                 evidence_sources[-1] = actual
@@ -460,10 +478,6 @@ class Connection(TransportDelegate):
                 # Same for a past refusal ON THIS PATH: it just proved it
                 # holds a bond, so the retained proof is stale and must go.
                 self._rejected_sources.discard(actual)
-                if actual != source:
-                    logger.debug(
-                        f"{self.address}: offered {source or 'local adapter'} "
-                        f"but HA connected via {actual or 'local adapter'}")
                 logger.info(
                     f"Connected to {self.address} ({self.name}) via "
                     f"{actual or 'local adapter'}")
@@ -485,8 +499,14 @@ class Connection(TransportDelegate):
                 # failure we CAN attribute. A failure to connect at all leaves
                 # client None and the path genuinely unknown — proven stays
                 # False and nothing is charged to anyone.
-                actual = connected_path_source(client, source)
-                proven = client is not None and actual is not None
+                real = connected_path_source(client)
+                proven = real is not None
+                if client is not None and not proven:
+                    logger.debug(
+                        f"{self.address}: a link existed but the backend did "
+                        f"not name it; this failure is charged to nobody")
+                # For the log line and the human-facing tried_sources only.
+                actual = real if proven else source
                 if proven:
                     tried_sources[-1] = actual
                     evidence_sources[-1] = actual
