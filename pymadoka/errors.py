@@ -18,13 +18,22 @@ from typing import Literal, Mapping, Optional, Sequence
 #                    path a pairing timeout means congestion (several
 #                    thermostats re-encrypting through the same proxies after
 #                    a restart), not a missing bond.
-# Consumers must not treat the second as proof: acting on it puts a pairing
-# prompt on a screen nobody is watching, and repeated prompts jam the BRC1H's
-# SMP stack.
-PairingFailureReason = Literal["rejected", "timeout_streak"]
+#   "unbonded_path"  every path the backend actually chose was outside the
+#                    caller's allowed set, for enough consecutive rounds to
+#                    give up. Not a pairing FAILURE at all: pairing was never
+#                    attempted, precisely so that no prompt would appear. A
+#                    fact about ROUTING, not an accusation about a bond — the
+#                    fix is to pair with the proxy named in `evidence`, and no
+#                    existing bond may be evicted on the strength of it.
+# Consumers must not treat the last two as proof of a missing bond: acting on
+# them puts a pairing prompt on a screen nobody is watching, and repeated
+# prompts jam the BRC1H's SMP stack.
+PairingFailureReason = Literal["rejected", "timeout_streak", "unbonded_path"]
 
-# Per-path verdict carried in PairingRequiredError.evidence.
-PathVerdict = Literal["rejected", "timeout", "transient"]
+# Per-path verdict carried in PairingRequiredError.evidence. "unbonded" means
+# the path was skipped BEFORE pair(): it records where the connection landed
+# and says nothing whatsoever about that proxy's bond.
+PathVerdict = Literal["rejected", "timeout", "transient", "unbonded"]
 
 
 class MadokaError(Exception):
@@ -66,6 +75,18 @@ class PairingRequiredError(MadokaError):
         self.timeout_rounds = timeout_rounds
         self.evidence = dict(evidence or {})
         via = ", ".join(str(s) if s is not None else "local adapter" for s in self.tried_sources) or "unknown"
+        if reason == "unbonded_path":
+            # Names what to DO, because this one is actionable and precise: we
+            # know exactly which proxy the connection keeps landing on, and
+            # that pairing with it has never been attempted.
+            super().__init__(
+                f"{address} could only be reached through a path that is not "
+                f"allowed to pair (landed on: {via}) for {timeout_rounds} "
+                "consecutive rounds — no pairing was attempted, so nothing "
+                "was prompted on the thermostat; pair with that proxy "
+                "deliberately to make the path usable"
+            )
+            return
         if reason == "timeout_streak":
             # Deliberately NOT "refused": nothing refused anything. Saying so
             # would be factually false on a bonded path under congestion, and

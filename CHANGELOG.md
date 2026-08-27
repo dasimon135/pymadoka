@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.3.12
+
+- **Pairing is no longer attempted on a path the caller did not sanction.**
+  New `allowed_sources_callback` on `Controller`/`Connection`: it returns the
+  proxy sources the device may pair through, and it is checked against the
+  path the backend *actually* used, read after `establish_connection` and
+  before `pair()`. This closes the hole v0.3.11 could only report: filtering
+  the candidate list cannot control where a connect lands, because habluetooth
+  keeps just the address and re-scores every path itself. A connection routed
+  somewhere unsanctioned is now dropped without pairing, so no
+  numeric-comparison prompt ever appears on the thermostat screen — the
+  failure mode that put eight prompts on one BRC1H in an hour, through a proxy
+  that was not in its allowed list at all.
+
+  Fails open at every step, deliberately: no callback, a callback that raises,
+  an empty allowed set, or a path the backend cannot name all pair as before.
+  The guard can only ever remove a pairing opportunity, so a broken policy
+  must never be the reason a device cannot connect.
+
+- **New `PairingRequiredError` reason: `"unbonded_path"`.** Raised when every
+  path chosen was unsanctioned for `UNBONDED_PATH_ROUNDS` (3) consecutive
+  rounds, with `evidence` naming the proxy the connection keeps landing on. It
+  is a statement about ROUTING, not about a bond: nothing was refused and
+  nothing timed out, because nothing was attempted. Consumers must not evict a
+  bond on it — the remedy is to pair with the named proxy deliberately.
+  `PathVerdict` gains the matching `"unbonded"` value.
+
 ## v0.3.11
 
 - **`connected_source` and the per-path evidence now name the path Home

@@ -39,9 +39,35 @@ PAIRING_TIMEOUT_ROUNDS = 3
 # (a manual "pair now" action) raise pair_timeout for the duration.
 DEFAULT_PAIR_TIMEOUT = 8.0
 
+# Consecutive rounds in which EVERY path the backend chose was outside the
+# caller's allowed set before we say so out loud. A single such round is
+# ordinary: habluetooth re-scores every path on every connect (RSSI, failure
+# counts, free slots all move), so the winner changes minute to minute and the
+# next poll may well land on an allowed proxy. A streak means the scoring
+# genuinely favours a path nobody may pair on, which only a human can resolve.
+# Skipped rounds are cheap — a connect and a disconnect, no SMP, nothing on the
+# thermostat screen — so this can afford to be patient.
+UNBONDED_PATH_ROUNDS = 3
+
+
 class ConnectionException(MadokaError):
     """Generic connection/protocol failure (legacy name, kept for compat)."""
     pass
+
+
+class _UnbondedPath(Exception):
+    """Internal marker: the backend landed on a path we may not pair on.
+
+    Private and never raised past _connect_via_ha. It exists so the skip can
+    reuse the candidate loop's existing teardown (disconnect inline, attribute
+    the real path, move to the next candidate) instead of duplicating it, while
+    staying impossible to confuse with a real BLE failure — notably by
+    is_pairing_error(), which must never see it as a refused bond.
+    """
+
+    def __init__(self, source: str):
+        self.source = source
+        super().__init__(f"connection landed on {source}, which may not pair")
 
 
 class ConnectionStatus(Enum):
@@ -151,6 +177,7 @@ class Connection(TransportDelegate):
         name: str = None,
         candidates_callback=None,
         pair_timeout: float = DEFAULT_PAIR_TIMEOUT,
+        allowed_sources_callback=None,
     ):
         self.reconnect = reconnect
         # Public and mutable: callers widen it around a user-driven pairing.
@@ -160,6 +187,12 @@ class Connection(TransportDelegate):
         self.name = name or address
         self.hass = hass
         self.candidates_callback = candidates_callback
+        # Returns the source MACs this device may PAIR through, or None/empty
+        # for "unrestricted". A callback rather than a list because the answer
+        # changes without the Connection being rebuilt: opening a pairing
+        # window (a user standing at the thermostat) lifts the restriction for
+        # a few minutes, and a successful session adds a proxy to the set.
+        self.allowed_sources_callback = allowed_sources_callback
         self.connected_source = None
         self.last_error = None
         self.connection_status = ConnectionStatus.DISCONNECTED
@@ -175,6 +208,9 @@ class Connection(TransportDelegate):
         # Consecutive rounds where every path timed out while pairing; reset
         # by any successful connect. See PAIRING_TIMEOUT_ROUNDS.
         self._pairing_timeout_rounds = 0
+        # Consecutive rounds where every path was outside the allowed set;
+        # reset by any successful connect. See UNBONDED_PATH_ROUNDS.
+        self._unbonded_path_rounds = 0
         # Sources that have EXPLICITLY refused the authenticated bond, kept
         # across rounds. A rejection is durable proof — a bond does not come
         # back without a human — so it must not be thrown away just because a
@@ -221,6 +257,42 @@ class Connection(TransportDelegate):
     def rejected_sources(self) -> frozenset:
         """Sources that explicitly refused the bond and have not since worked."""
         return frozenset(self._rejected_sources)
+
+    def _path_may_pair(self, source) -> bool:
+        """May we call pair() on the path we actually landed on?
+
+        FAILS OPEN at every step, deliberately. This guard exists to stop an
+        unwanted pairing prompt, which is an annoyance; refusing to connect is
+        an outage. Whenever the answer is not a confident "no", it is "yes":
+
+        * no callback, or one that returns nothing — the caller is not using
+          the feature, or has no bond on record yet (a fresh install has to be
+          able to pair with SOMETHING);
+        * a callback that raises — a broken policy must not strand the device,
+          so it is logged and ignored;
+        * an unreadable path — a local adapter or a plain BleakClient never
+          names a scanner, and there is no proxy to restrict in that case.
+
+        Only a path that is positively known AND positively absent from a
+        non-empty allowed set is refused.
+        """
+        if self.allowed_sources_callback is None:
+            return True
+        try:
+            allowed = self.allowed_sources_callback()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                f"allowed_sources_callback failed for {self.address}; "
+                "letting this path pair rather than stranding the device")
+            return True
+        if not allowed:
+            return True
+        if source is None:
+            logger.debug(
+                f"{self.address}: the backend did not name the path it used, "
+                "so the allowed-source restriction cannot be applied to it")
+            return True
+        return source in set(allowed)
 
     def discard_request(self, cmd_id: int, cmd_response) -> None:
         """Remove a pending response future from the request queue.
@@ -417,6 +489,20 @@ class Connection(TransportDelegate):
                     disconnected_callback=self.on_disconnect,
                     max_attempts=1,
                 )
+                # BEFORE pair(), and this order is the entire fix. Filtering
+                # the candidate list cannot control where the connection
+                # lands: habluetooth keeps only the address and re-scores
+                # every path itself (see connected_path_source), so the link
+                # we now hold may well run through a proxy the caller
+                # explicitly excluded. Pairing there starts a real
+                # numeric-comparison exchange, which puts a 6-digit prompt on
+                # the thermostat screen that no unattended retry can answer —
+                # the harassment this guard exists to end. The link is already
+                # up, so the real path is readable exactly when it is still
+                # cheap to walk away from it.
+                landed_on = connected_path_source(client)
+                if not self._path_may_pair(landed_on):
+                    raise _UnbondedPath(landed_on)
                 # Establish the authenticated bond BEFORE any GATT operation
                 # (see _connect_via_ha_single). Pair on every path attempt:
                 # the bond is stored per BLE adapter/proxy, so a different
@@ -475,6 +561,9 @@ class Connection(TransportDelegate):
                 # just authenticated. Forget them, or an unlucky streak
                 # spread over hours would eventually accuse a healthy bond.
                 self._pairing_timeout_rounds = 0
+                # Likewise: the routing just produced a usable path, so any
+                # streak of rounds where it did not is history.
+                self._unbonded_path_rounds = 0
                 # Same for a past refusal ON THIS PATH: it just proved it
                 # holds a bond, so the retained proof is stale and must go.
                 self._rejected_sources.discard(actual)
@@ -516,7 +605,18 @@ class Connection(TransportDelegate):
                 # all-paths-need-pairing situation as mixed/transient.
                 if client is not None:
                     await self._disconnect_client(client)
-                if pair_timed_out:
+                if isinstance(e, _UnbondedPath):
+                    # NOT a pairing verdict: pair() was never called, so this
+                    # says nothing about any bond and must never be counted
+                    # toward "every path failed auth". It records only where
+                    # the connection landed.
+                    verdicts.append("unbonded")
+                    logger.info(
+                        f"{self.address}: HA routed the connection through "
+                        f"{actual or 'local adapter'}, which is not allowed to "
+                        "pair; dropped it without pairing (no prompt on the "
+                        "thermostat) and trying the next path")
+                elif pair_timed_out:
                     verdicts.append("timeout")
                     logger.info(
                         f"{self.address}: pairing via "
@@ -560,6 +660,31 @@ class Connection(TransportDelegate):
         every_path_failed_auth = (
             auth_rejections + pair_timeouts == len(candidates)
         )
+        # A round in which the backend never once routed us somewhere we are
+        # allowed to pair. Tracked as a strict CONSECUTIVE streak — any round
+        # that managed anything else clears it — because the scoring moves
+        # constantly and an unlucky handful of rounds spread over hours must
+        # not add up to an accusation.
+        if verdicts and all(verdict == "unbonded" for verdict in verdicts):
+            self._unbonded_path_rounds += 1
+            if self._unbonded_path_rounds >= UNBONDED_PATH_ROUNDS:
+                rounds = self._unbonded_path_rounds
+                # Reset for the same reason the timeout streak does: leaving
+                # the counter past the threshold would re-raise on every
+                # subsequent round, including the user's own retry.
+                self._unbonded_path_rounds = 0
+                self.last_error = PairingRequiredError(
+                    self.address, tried_sources=tried_sources,
+                    reason="unbonded_path", timeout_rounds=rounds,
+                    evidence=evidence)
+                self.connection_status = ConnectionStatus.ABORTED
+                raise self.last_error
+            logger.info(
+                f"{self.address}: every path HA chose this round was not "
+                f"allowed to pair (round {self._unbonded_path_rounds}/"
+                f"{UNBONDED_PATH_ROUNDS}); retrying without pairing")
+        else:
+            self._unbonded_path_rounds = 0
         if every_path_failed_auth and auth_rejections:
             # At least one path actively refused: unambiguous, report now.
             self._pairing_timeout_rounds = 0
