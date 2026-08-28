@@ -53,6 +53,16 @@ pymadoka-mqtt = "pymadoka.mqtt:run"
 [tool.setuptools.packages.find]
 include = ["pymadoka*"]
 
+[tool.ruff.lint]
+# Pinned rule set, declared rather than inherited. Ruff 0.16 promoted a large
+# family of rules (I001, most of UP, BLE, TRY, LOG, FLY) into its DEFAULT
+# selection, which turned this repository's lint step red on unchanged code
+# from 26 July onwards -- 170 findings, none of them from a commit. What is
+# selected here is the gate this repository has actually enforced all along;
+# adopting the wider 0.16 default is a deliberate cleanup, not something an
+# upstream release gets to impose mid-PR.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Explicit -p: the suite runs with PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so the

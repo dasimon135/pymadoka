@@ -23,7 +23,11 @@ jobs:
       - name: Install package and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
+          # Pinned: ruff 0.16 moved a large family of rules into its default
+          # selection and turned this step red on unchanged code. The rule set
+          # itself now lives in pyproject; pinning the binary keeps a later
+          # release from changing the gate again without a commit saying so.
+          pip install ruff==0.16.0
           pip install .[test]
 
       - name: Lint
