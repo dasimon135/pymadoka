@@ -37,7 +37,7 @@ class Controller:
         set_point (Feature): Feature used to control the fan speed
         clean_filter_indicator (Feature): Feature used to control the fan speed
     """
-    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None, pair_timeout: float = DEFAULT_PAIR_TIMEOUT):
+    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None, pair_timeout: float = DEFAULT_PAIR_TIMEOUT, allowed_sources_callback=None):
         """Inits the controller with the device address.
 
         Args:
@@ -51,6 +51,12 @@ class Controller:
             pair_timeout (float): budget for one pair() call. Raise it around a
                 user-driven pairing: numeric comparison needs a human to accept
                 on the thermostat screen, which the default cannot accommodate.
+            allowed_sources_callback: callback returning the proxy source MACs
+                this device may PAIR through (None/empty = unrestricted).
+                Checked against the path the backend actually used, so it holds
+                where candidates_callback cannot: Home Assistant re-routes
+                connects freely, and pairing on an unsanctioned proxy puts a
+                prompt on the thermostat screen that nobody can answer.
         """
 
         if adapter is None:
@@ -66,6 +72,7 @@ class Controller:
             name=name,
             candidates_callback=candidates_callback,
             pair_timeout=pair_timeout,
+            allowed_sources_callback=allowed_sources_callback,
         )
 
         self.fan_speed = FanSpeed(self.connection)
