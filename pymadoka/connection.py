@@ -616,6 +616,32 @@ class Connection(TransportDelegate):
                         f"{actual or 'local adapter'}, which is not allowed to "
                         "pair; dropped it without pairing (no prompt on the "
                         "thermostat) and trying the next path")
+                elif proven and actual in self._rejected_sources:
+                    # This path refused the bond in an earlier round and has
+                    # not authenticated since, so it is still known to hold
+                    # none — whatever it failed with this time. Retaining the
+                    # proof is what stops one flapping proxy from postponing a
+                    # legitimate conclusion forever. Conservative by
+                    # construction: only a PROVEN refusal is ever retained,
+                    # never a timeout and never a plain transient failure.
+                    #
+                    # Ordered ABOVE pair_timed_out on purpose, and the order is
+                    # the whole point: a keyless proxy's normal failure IS a
+                    # timeout, because the prompt goes up on the thermostat and
+                    # nobody answers it. Tested after it, this branch could
+                    # only ever see the rarer failures, so the proof was
+                    # discarded on exactly the rounds it was written for and
+                    # the verdict decayed to "timeout" forever (Salon,
+                    # 2026-08-28: one refusal, then timeouts for hours, and a
+                    # consumer that acts only on proven refusals charged
+                    # nobody). Still below _UnbondedPath: a round that never
+                    # called pair() says nothing about any bond, retained proof
+                    # or not.
+                    verdicts.append("rejected")
+                    logger.info(
+                        f"{self.address}: path via {actual or 'local adapter'} "
+                        f"failed ({e}) and already refused the bond earlier; "
+                        "keeping that verdict")
                 elif pair_timed_out:
                     verdicts.append("timeout")
                     logger.info(
@@ -631,19 +657,6 @@ class Connection(TransportDelegate):
                     logger.info(
                         f"{self.address}: path via {actual or 'local adapter'} "
                         f"refused the bond, trying next path: {e}")
-                elif proven and actual in self._rejected_sources:
-                    # This path refused the bond in an earlier round and has
-                    # not authenticated since, so it is still known to hold
-                    # none — whatever it failed with this time. Retaining the
-                    # proof is what stops one flapping proxy from postponing a
-                    # legitimate conclusion forever. Conservative by
-                    # construction: only a PROVEN refusal is ever retained,
-                    # never a timeout and never a plain transient failure.
-                    verdicts.append("rejected")
-                    logger.info(
-                        f"{self.address}: path via {actual or 'local adapter'} "
-                        f"failed ({e}) and already refused the bond earlier; "
-                        "keeping that verdict")
                 else:
                     verdicts.append("transient")
                     logger.warning(

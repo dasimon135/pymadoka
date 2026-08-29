@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.3.13
+
+- **A path proven bondless keeps that verdict when it later merely times out.**
+  The retained-refusal branch documents itself as applying "whatever it failed
+  with this time", but it was tested one branch below `pair_timed_out` — and a
+  keyless proxy's normal failure IS a timeout, because the prompt goes up on
+  the thermostat and nobody answers it. So the branch could only ever see the
+  rarer failures, and the proof was discarded on exactly the rounds it was
+  written for.
+
+  The verdict therefore decayed from `"rejected"` to `"timeout"` from the
+  second round onward, and a consumer that acts only on proven refusals — as
+  it must, since congestion times out on healthy bonds too — charged nobody.
+  The proxy kept its place in the caller's bonded list, which is precisely the
+  list the pairing veto trusts, so every reconnect put a fresh six-digit code
+  on the thermostat screen with nothing able to conclude otherwise.
+
+  Measured (2026-08-28): one proxy refused a thermostat's bond once with
+  "Insufficient authentication", then timed out on every round for the next
+  eleven hours. A second, independent tool had already named it as holding no
+  key for that device; this library could not, and its own retained proof was
+  sitting unused the whole time.
+
+  Ordering is the entire fix: retained proof now sits directly below
+  `_UnbondedPath` — a round that never called `pair()` still says nothing
+  about any bond — and above every failure classifier. Nothing else changes:
+  only a PROVEN refusal is ever retained, never a timeout, and a successful
+  authenticated connect through that path still discards it.
+
+  This also settles a latent hazard in the same round: per-path verdicts are
+  collapsed with `dict(zip(...))`, where later duplicates win. That is safe
+  only while "proven sources are unique per round", which HA's re-scoring
+  breaks routinely — it elects whichever proxy is free, so several attempts in
+  one round land on the same one. A refusal followed by a timeout on that path
+  used to be recorded as a timeout; both are now `"rejected"`, so the collapse
+  can no longer lose the stronger evidence.
+
+
 ## v0.3.12
 
 - **Pairing is no longer attempted on a path the caller did not sanction.**
