@@ -422,3 +422,54 @@ def test_connected_path_source_says_None_when_the_backend_is_silent():
     assert connected_path_source(
         SimpleNamespace(_connected_scanner=SimpleNamespace(source="PROXY_B"))
     ) == "PROXY_B"
+
+
+# --------------------------------------------------------------------------
+# Defect: retained proof was unreachable for the failure it exists to survive
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retained_proof_survives_a_pairing_timeout():
+    """A path proven bondless keeps its verdict when it merely TIMES OUT later.
+
+    Field case (Salon, 2026-08-28): a proxy refused the bond once with
+    "Insufficient authentication", and every round after that timed out
+    instead — because the normal failure of a keyless proxy IS a timeout. The
+    prompt goes up on the thermostat and nobody answers it.
+
+    The retained-refusal branch says it applies "whatever it failed with this
+    time", but `pair_timed_out` was tested one branch earlier, so the proof was
+    never consulted in the only case it was written for. The verdict decayed to
+    "timeout", a consumer that only acts on proven refusals charged nobody, and
+    the proxy kept its place in the bonded list — putting a fresh six-digit
+    code on the thermostat screen on every reconnect, indefinitely.
+    """
+    bad = make_client_on("PROXY_B", pair_exc=TimeoutError())
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=bad)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        conn._rejected_sources.add("PROXY_B")
+        with pytest.raises(PairingRequiredError) as excinfo:
+            await conn._connect_via_ha()
+
+    # Proven, not inferred: the round can be reported immediately instead of
+    # waiting out a timeout streak that would never complete.
+    assert excinfo.value.evidence == {"PROXY_B": "rejected"}
+    assert excinfo.value.reason == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_alone_never_becomes_a_refusal():
+    """Without retained proof, a timeout stays a timeout.
+
+    The guard rail on the test above: congestion times out too, and a timeout
+    that convicts a healthy bond costs a re-pair with a human at the thermostat.
+    """
+    bad = make_client_on("PROXY_B", pair_exc=TimeoutError())
+    with patch("bleak_retry_connector.establish_connection",
+               AsyncMock(return_value=bad)), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        await conn._connect_via_ha()
+
+    assert conn._rejected_sources == set()
