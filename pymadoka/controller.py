@@ -18,8 +18,18 @@ from pymadoka.features.setpoint import SetPoint
 from pymadoka.features.temperatures import Temperatures
 from pymadoka.features.clean_filter import CleanFilterIndicator,ResetCleanFilterTimer
 from pymadoka.features.eye_brightness import EyeBrightness
+from pymadoka.features.ventilation import Ventilation
 
 logger = logging.getLogger(__name__)
+
+#: A BRC1H driving an air-conditioning unit. The default, and what every
+#: version of this library before 0.4.0 assumed.
+DEVICE_TYPE_THERMOSTAT = "thermostat"
+
+#: A BRC1H driving a VAM (Ventilation Air Management / HRV). It keeps its state
+#: on function 0x0031 and answers 0x0050 with zero-length arguments that never
+#: change, so it gets `Ventilation` where a thermostat gets `FanSpeed`.
+DEVICE_TYPE_VENTILATION = "ventilation"
 
 
 class Controller:
@@ -37,7 +47,7 @@ class Controller:
         set_point (Feature): Feature used to control the fan speed
         clean_filter_indicator (Feature): Feature used to control the fan speed
     """
-    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None, pair_timeout: float = DEFAULT_PAIR_TIMEOUT, allowed_sources_callback=None):
+    def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None, pair_timeout: float = DEFAULT_PAIR_TIMEOUT, allowed_sources_callback=None, device_type: str = DEVICE_TYPE_THERMOSTAT):
         """Inits the controller with the device address.
 
         Args:
@@ -57,6 +67,12 @@ class Controller:
                 where candidates_callback cannot: Home Assistant re-routes
                 connects freely, and pairing on an unsanctioned proxy puts a
                 prompt on the thermostat screen that nobody can answer.
+            device_type (str): DEVICE_TYPE_THERMOSTAT (default) or
+                DEVICE_TYPE_VENTILATION. It decides which of `fan_speed`
+                (function 0x0050) and `ventilation` (function 0x0031) exists on
+                the controller — never both, because the one that does not
+                belong costs a query round trip per poll and answers nothing
+                usable. An unknown value is treated as a thermostat.
         """
 
         if adapter is None:
@@ -75,7 +91,17 @@ class Controller:
             allowed_sources_callback=allowed_sources_callback,
         )
 
-        self.fan_speed = FanSpeed(self.connection)
+        self.device_type = device_type
+
+        # Exactly one of these two. A VAM answers 0x0050, but with zero-length
+        # arguments that never change, so FanSpeed there is a query round trip
+        # per poll for a value nothing can read or write. A thermostat does not
+        # answer 0x0031 at all.
+        if device_type == DEVICE_TYPE_VENTILATION:
+            self.ventilation = Ventilation(self.connection)
+        else:
+            self.fan_speed = FanSpeed(self.connection)
+
         self.operation_mode = OperationMode(self.connection)
         self.power_state = PowerState(self.connection)
         self.set_point = SetPoint(self.connection)
@@ -110,6 +136,14 @@ class Controller:
         poll where NO feature answered raises ConnectionException: without it a
         connected-but-unresponsive device would look like a successful update
         of stale, previously accumulated statuses.
+
+        The walk over `vars(self)` is deliberate and is a supported extension
+        point, not an oversight: a caller can attach its own Feature to the
+        controller and have it polled with the rest. Home Assistant's
+        daikin_madoka integration relies on this for its energy-consumption
+        feature, so replacing this with a fixed list of attribute names would
+        silently stop polling it. Which features the controller *owns* is
+        decided once, in __init__, by `device_type`.
         """
 
         answered = 0

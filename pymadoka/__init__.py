@@ -1,4 +1,4 @@
-from .controller import Controller
+from .controller import Controller, DEVICE_TYPE_THERMOSTAT, DEVICE_TYPE_VENTILATION
 from .connection import Connection, ConnectionStatus, discover_devices, force_device_disconnect
 from .connection import ConnectionException
 from .errors import MadokaError, PairingRequiredError, DeviceUnreachableError
@@ -10,12 +10,15 @@ from .features.operationmode import OperationMode, OperationModeStatus, Operatio
 from .features.power import PowerState, PowerStateStatus
 from .features.setpoint import SetPoint, SetPointStatus
 from .features.temperatures import Temperatures, TemperaturesStatus
+from .features.ventilation import Ventilation, VentilationStatus, VentilationModeEnum
 
 # NOTE: .cli is intentionally NOT imported here: it needs the [cli] extra
 # (click) and would break `import pymadoka` on a lean install.
 
 __all__ = [
     "Controller",
+    "DEVICE_TYPE_THERMOSTAT",
+    "DEVICE_TYPE_VENTILATION",
     "Connection",
     "ConnectionStatus",
     "ConnectionException",
@@ -45,4 +48,7 @@ __all__ = [
     "SetPointStatus",
     "Temperatures",
     "TemperaturesStatus",
+    "Ventilation",
+    "VentilationStatus",
+    "VentilationModeEnum",
 ]
