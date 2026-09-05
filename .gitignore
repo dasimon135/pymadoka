@@ -138,3 +138,6 @@ dmypy.json
 cython_debug/
 
 .vscode/
+
+# Personal Claude Code settings, never shared
+.claude/settings.local.json

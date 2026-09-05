@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.4.0
+
+- **VAM ventilation units are modelled by the library, not by its callers.**
+  Function `0x0031` — how a VAM (Ventilation Air Management / HRV) keeps its
+  ventilation mode and fan speed — now has a `Ventilation` feature, with
+  `VentilationStatus` and `VentilationModeEnum` beside it. It was written and
+  measured by @Frank802 on a VAM350J8VEB behind a BRC1H (firmware 1.10.3) and
+  lived, until now, inside the Home Assistant integration, which had to reach
+  into the controller to attach it. Protocol knowledge belongs here.
+
+  A write serializes **only the argument it sets**, and `update()` merges the
+  result back over the previous status rather than replacing it. Both matter
+  for the same reason: the unit applies whatever it is sent and never reports a
+  rejection, so a stale companion argument would silently overwrite a value the
+  caller never meant to touch.
+
+- **`Controller` takes a `device_type`, and a VAM stops polling function
+  `0x0050`.** `DEVICE_TYPE_THERMOSTAT` (the default, and what every earlier
+  release assumed) gives the controller `fan_speed`; `DEVICE_TYPE_VENTILATION`
+  gives it `ventilation` instead. Never both.
+
+  A VAM does answer `0x0050`, which is why this went unnoticed — but every
+  argument comes back with length 0 and none of them ever change, so `FanSpeed`
+  there could neither read nor write anything while still costing a query round
+  trip on every poll. An unknown `device_type` is treated as a thermostat.
+
+  **Not hardware-validated.** No VAM was available to the maintainer, then or
+  since. What is verified is that a thermostat controller is unchanged.
+
+- `Controller.update()` now documents that its walk over `vars(self)` is a
+  supported extension point rather than an oversight: a caller may attach its
+  own `Feature` and have it polled with the rest, and the Home Assistant
+  integration relies on this for its energy-consumption feature. Replacing it
+  with a fixed list of attribute names would silently stop polling that.
+
 ## v0.3.13
 
 - **A path proven bondless keeps that verdict when it later merely times out.**
