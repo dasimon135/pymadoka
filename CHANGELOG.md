@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.1
+
+- **A round that ends connected no longer hides the paths that failed before
+  it.** `Connection.last_round_evidence` exposes the per-path verdicts of the
+  most recent candidates round, in the same shape and with the same
+  attribution rule as `PairingRequiredError.evidence`, and it is set on every
+  round, successful ones included. Until now those verdicts only left the
+  library inside the error, so a path that timed out while pairing, followed
+  by one that authenticated, was invisible to the caller.
+
+  Seen on a Home Assistant installation on 2026-09-18: HA kept routing a
+  thermostat through a proxy whose bond was dead. Every attempt there put a
+  pairing prompt on the thermostat screen, and every round still ended
+  connected through another proxy, so the caller never learnt which proxy had
+  timed out and could never stop using it.
+
+  The path that connected is not listed (read `connected_source`). A round
+  that authenticates on its first path leaves the mapping empty. Nothing else
+  changes: no verdict, streak or exception is computed differently.
+
 ## v0.4.0
 
 - **VAM ventilation units are modelled by the library, not by its callers.**

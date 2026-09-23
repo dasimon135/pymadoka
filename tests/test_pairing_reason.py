@@ -356,6 +356,90 @@ async def test_retained_evidence_never_convicts_a_never_rejected_path():
 
 
 # --------------------------------------------------------------------------
+# The round's evidence survives the round ending in a success
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_round_that_succeeds_keeps_the_timeouts_before_it():
+    """The defect: the path that authenticated returned, and the timeout on the
+    path tried before it was thrown away with the round's other verdicts.
+
+    Field case 2026-09-18: HA kept routing one thermostat through a proxy whose
+    bond was dead, every attempt there put a pairing prompt on its screen, and
+    each round still ended connected through another proxy - so the consumer
+    never learnt which proxy had just timed out, and never dropped it.
+    """
+    clients = [make_client(pair_exc=TimeoutError()), make_client()]
+    with patch_connect(clients), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
+        await conn._connect_via_ha()
+
+    assert conn.connection_status is ConnectionStatus.CONNECTED
+    assert conn.connected_source == "PROXY_B"
+    assert conn.last_round_evidence == {"PROXY_A": "timeout"}
+
+
+@pytest.mark.asyncio
+async def test_a_clean_success_leaves_no_evidence():
+    clients = [make_client()]
+    with patch_connect(clients), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        await conn._connect_via_ha()
+
+    assert conn.last_round_evidence == {}
+
+
+@pytest.mark.asyncio
+async def test_each_round_starts_with_fresh_evidence():
+    devices = [make_device("PROXY_A"), make_device("PROXY_B")]
+    with patch_connect(
+        [make_client(pair_exc=TimeoutError()), make_client()]
+    ), patch_settle_sleep():
+        conn = make_connection(devices)
+        await conn._connect_via_ha()
+    assert conn.last_round_evidence == {"PROXY_A": "timeout"}
+
+    conn.connection_status = ConnectionStatus.DISCONNECTED
+    with patch_connect([make_client()]), patch_settle_sleep():
+        await conn._connect_via_ha()
+    assert conn.last_round_evidence == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_round_exposes_what_its_error_carries():
+    clients = [make_client(pair_exc=AUTH_FAIL), make_client(pair_exc=TimeoutError())]
+    with patch_connect(clients), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
+        with pytest.raises(PairingRequiredError) as excinfo:
+            await conn._connect_via_ha()
+
+    assert conn.last_round_evidence == excinfo.value.evidence
+
+
+@pytest.mark.asyncio
+async def test_a_failed_round_that_raises_nothing_still_exposes_it():
+    """A mixed round is retried silently; its verdicts must not vanish either."""
+    clients = [make_client(pair_exc=TimeoutError()), TRANSIENT]
+    with patch_connect(clients), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
+        await conn._connect_via_ha()
+
+    assert conn.last_round_evidence == {"PROXY_A": "timeout", None: "transient"}
+
+
+@pytest.mark.asyncio
+async def test_the_evidence_is_a_copy():
+    clients = [make_client(pair_exc=TimeoutError()), make_client()]
+    with patch_connect(clients), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A"), make_device("PROXY_B")])
+        await conn._connect_via_ha()
+
+    conn.last_round_evidence.clear()
+    assert conn.last_round_evidence == {"PROXY_A": "timeout"}
+
+
+# --------------------------------------------------------------------------
 # Public accessors
 # --------------------------------------------------------------------------
 
