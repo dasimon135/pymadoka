@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.2
+
+- **A negative outdoor temperature is no longer read as 128 or more.** The
+  outdoor value (function 0x0110, argument 0x41) is one byte, and it was read
+  as an unsigned integer: -5 C would have come out as 133 C. It is now decoded
+  as sign and magnitude (bit 7 set means below zero, the low seven bits are the
+  degrees), the way the protocol's reverse engineer decodes it in the OpenHAB
+  binding. 0xFF still means the unit reports no outdoor sensor. No capture
+  below 0 C has confirmed the rule yet; positive values are unchanged.
+
 ## v0.4.1
 
 - **A round that ends connected no longer hides the paths that failed before
