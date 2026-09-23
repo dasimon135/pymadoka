@@ -218,6 +218,9 @@ class Connection(TransportDelegate):
         # flapping proxy could otherwise postpone a legitimate conclusion
         # forever. Cleared per source the moment that source authenticates.
         self._rejected_sources: set = set()
+        # Per-path verdicts of the last candidates round, including one that
+        # ended connected. See last_round_evidence.
+        self._last_round_evidence: dict = {}
         # Fire-and-forget cleanup tasks: keep a reference so they cannot be
         # garbage-collected mid-flight.
         self._bg_tasks: set = set()
@@ -257,6 +260,22 @@ class Connection(TransportDelegate):
     def rejected_sources(self) -> frozenset:
         """Sources that explicitly refused the bond and have not since worked."""
         return frozenset(self._rejected_sources)
+
+    @property
+    def last_round_evidence(self) -> dict:
+        """Per-path verdicts of the most recent candidates round, as a copy.
+
+        Same shape and same attribution rule as `PairingRequiredError.evidence`
+        (proven source -> "rejected" | "timeout" | "transient" | "unbonded",
+        unattributable attempts under None), but set on EVERY round, including
+        one that ended connected through a later path. That is the case the
+        error cannot describe: a path that timed out while pairing, followed by
+        one that authenticated, raises nothing, yet the timed-out path may hold
+        a dead bond and put a prompt on the thermostat screen on every round
+        that reaches it. The path that connected is not listed; read
+        `connected_source` for it.
+        """
+        return dict(self._last_round_evidence)
 
     def _path_may_pair(self, source) -> bool:
         """May we call pair() on the path we actually landed on?
@@ -440,6 +459,7 @@ class Connection(TransportDelegate):
             raise self.last_error
 
         tried_sources = []
+        self._last_round_evidence = {}
         # Per-path verdict for THIS round, aligned with tried_sources:
         # "rejected" | "timeout" | "transient". Split by evidence strength: a
         # rejection proves the bond is gone, a timeout only suggests it (see
@@ -567,6 +587,10 @@ class Connection(TransportDelegate):
                 # Same for a past refusal ON THIS PATH: it just proved it
                 # holds a bond, so the retained proof is stale and must go.
                 self._rejected_sources.discard(actual)
+                # verdicts holds one entry per FAILED path, so zipping stops
+                # before this one: what is kept is what went wrong earlier in
+                # the round.
+                self._last_round_evidence = dict(zip(evidence_sources, verdicts))
                 logger.info(
                     f"Connected to {self.address} ({self.name}) via "
                     f"{actual or 'local adapter'}")
@@ -668,6 +692,7 @@ class Connection(TransportDelegate):
         # sources, so an unknown path cannot cost any proxy its bond. Later
         # duplicates win; proven sources are normally unique per round.
         evidence = dict(zip(evidence_sources, verdicts))
+        self._last_round_evidence = dict(evidence)
         auth_rejections = verdicts.count("rejected")
         pair_timeouts = verdicts.count("timeout")
         every_path_failed_auth = (
