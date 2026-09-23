@@ -31,9 +31,23 @@ class TemperaturesStatus(FeatureStatus):
     def set_values(self, values:Dict[str,bytearray]):
         """See base class."""
         self.indoor = values[self.INDOOR_IDX][0]
-        self.outdoor = values[self.OUTDOOR_IDX][0]
-        if self.outdoor == 0xff:
-            self.outdoor = None
+        self.outdoor = self._decode_outdoor(values[self.OUTDOOR_IDX][0])
+
+    @staticmethod
+    def _decode_outdoor(raw: int):
+        """One byte: 0xFF for no outdoor sensor, else sign and magnitude.
+
+        Bit 7 set means below zero and the low seven bits are the degrees, so
+        0x85 is -5 C. That is how the protocol's reverse engineer decodes it in
+        the OpenHAB binding (GetIndoorOutoorTemperatures.java). Read as a plain
+        unsigned byte, -5 C came out as 133 C. No capture below 0 C has
+        confirmed it yet.
+        """
+        if raw == 0xFF:
+            return None
+        if raw & 0x80:
+            return -(raw & 0x7F)
+        return raw
         
     def get_values(self) -> Dict[str,bytearray]:
         """See base class."""
