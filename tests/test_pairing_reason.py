@@ -153,6 +153,23 @@ async def test_rejection_raise_reports_reason_rejected():
 
 
 @pytest.mark.asyncio
+async def test_a_link_lost_while_pairing_is_not_a_refusal():
+    """ESP_AUTH_SMP_CONN_TOUT (102) on every path: no verdict, nothing retained.
+
+    The 2026-09-28 round after an HA restart: one bonded proxy, the link drops
+    during pair(). Counted as a refusal, it convicted a healthy thermostat.
+    """
+    link_lost = BleakError("Pairing failed due to error: 102")
+    with patch_connect([make_client(pair_exc=link_lost)]), patch_settle_sleep():
+        conn = make_connection([make_device("PROXY_A")])
+        await conn._connect_via_ha()
+
+    assert conn.last_error is None
+    assert conn.last_round_evidence == {"PROXY_A": "transient"}
+    assert conn._rejected_sources == set()
+
+
+@pytest.mark.asyncio
 async def test_timeout_streak_raise_reports_reason_timeout_streak():
     clients = [make_client(pair_exc=TimeoutError()) for _ in range(PAIRING_TIMEOUT_ROUNDS)]
     with patch_connect(clients), patch_settle_sleep():

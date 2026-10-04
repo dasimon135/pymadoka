@@ -46,6 +46,9 @@ def test_pairing_required_renders_none_source_as_local_adapter():
             "error=5 description=Insufficient authentication"), True),
         # esp32_ble_client pairing failure (error 97 seen in HA logs)
         (BleakError("Pairing failed due to error: 97"), True),
+        # A different code is still a refusal: only 102 is carved out.
+        (BleakError("Pairing failed due to error: 81"), True),
+        (BleakError("Pairing failed due to error: 1020"), True),
         (BleakError("Insufficient Encryption"), True),
         # ATT error 0x05 at the very end of the message (no trailing space)
         (BleakError(
@@ -58,6 +61,12 @@ def test_pairing_required_renders_none_source_as_local_adapter():
         # prompt; it is responsible for treating its own TimeoutError as a
         # pairing failure (Task 4 call-site contract).
         (TimeoutError(), False),
+        # ESP_AUTH_SMP_CONN_TOUT (102): the link dropped mid-pairing. Seen on
+        # a bonded proxy 2.6 min after an HA restart (2026-09-28).
+        (BleakError("Pairing failed due to error: 102"), False),
+        (BleakError(
+            "F0:B3:1E:87:AF:FE - F0:B3:1E:87:AF:FE: "
+            "Pairing failed due to error: 102"), False),
         # "error=51" must not be mistaken for ATT error 5
         (BleakError("error=51 something"), False),
         (BleakError("Device disconnected"), False),

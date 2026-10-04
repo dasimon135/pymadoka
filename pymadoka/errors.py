@@ -129,6 +129,14 @@ _PAIRING_ERROR_MARKERS = (
 # e.g. "error=51" does not match, and a message ending in "error=5" does.
 _ATT_ERROR_5_RE = re.compile(r"\berror=5\b")
 
+# "Pairing failed due to error: N" (bleak-esphome) carries the proxy's raw
+# ESP-IDF esp_ble_auth_fail_rsn_t. 102 is ESP_AUTH_SMP_CONN_TOUT: the link
+# dropped while pairing, which says nothing about the bond. Read as a refusal,
+# it convicted a bonded proxy right after an HA restart (2026-09-28), while
+# every proxy was busy reconnecting. Other codes stay refusals: 97 (encryption
+# failed to start) is also what a lost key looks like.
+_LINK_LOST_WHILE_PAIRING_RE = re.compile(r"pairing failed due to error: 102\b")
+
 
 def is_pairing_error(exc: BaseException) -> bool:
     """True if the exception denotes a missing/refused authenticated bond.
@@ -138,6 +146,8 @@ def is_pairing_error(exc: BaseException) -> bool:
     knows a timeout means an unanswered prompt — handle it there.
     """
     text = str(exc).lower()
+    if _LINK_LOST_WHILE_PAIRING_RE.search(text):
+        return False
     if any(marker in text for marker in _PAIRING_ERROR_MARKERS):
         return True
     return _ATT_ERROR_5_RE.search(text) is not None
