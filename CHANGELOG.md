@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.4.3
+
+- **A link that drops during pairing is no longer reported as a refused
+  bond.** An ESPHome proxy reports a failed pairing as `Pairing failed due to
+  error: N`, where N is the ESP-IDF reason code, and `is_pairing_error` took
+  every such message for a refusal. Code 102 (`ESP_AUTH_SMP_CONN_TOUT`) means
+  the connection timed out while pairing, which says nothing about the bond.
+  That path now gets the `transient` verdict: it does not count towards a
+  refusal and is not retained as proof against the proxy.
+
+  Seen on a Home Assistant installation on 2026-09-28: 2.6 minutes after a
+  restart, while every proxy was busy reconnecting, a bonded proxy was recorded
+  as having refused the bond. Every other code is still a refusal, including 97
+  (encryption failed to start), which is also what a lost key produces.
+
 ## v0.4.2
 
 - **A negative outdoor temperature is no longer read as 128 or more.** The
