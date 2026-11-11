@@ -82,3 +82,21 @@ def test_restarted_sequence_discards_previous_chunks(transport, delegate):
 
     assert len(delegate.failed) == 1
     assert delegate.rebuilt == [bytes(make_message(7))]
+
+
+@pytest.mark.parametrize("size", range(2, 121))
+def test_every_length_rebuilds_whole(transport, delegate, size):
+    """Each chunk carries 19 payload bytes after its id, so the chunk count is
+    ceil(size / 19). Counting with the 20-byte chunk size declared some lengths
+    (20, 39-40, 58-60, 77-80, 96-100, ...) complete one chunk early, delivered
+    them truncated, and left the last chunk behind for the next message."""
+    message = make_message(size)
+
+    for chunk in transport.split_in_chunks(message):
+        transport.rebuild_chunk(chunk)
+    # The next message must not inherit anything from this one.
+    follow_up = make_message(7)
+    transport.rebuild_chunk(bytearray([0]) + follow_up)
+
+    assert delegate.rebuilt == [bytes(message), bytes(follow_up)]
+    assert delegate.failed == []
