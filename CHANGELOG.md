@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Multi-chunk answers of some lengths are no longer cut short.** The
+  transport counted the chunks of an incoming message with the 20-byte chunk
+  size, while each chunk carries 19 bytes of message after its sequence id. A
+  message of 20, 39-40, 58-60, 77-80 or 96-100 bytes (and so on) was declared
+  complete one chunk early, handed over truncated, and its last chunk was left
+  in the buffer, where it was discarded at the start of the next message. The
+  count now uses 19. Which lengths real answers take depends on the unit; the
+  usual setpoint answer (61 bytes) was never affected.
+
 ## v0.4.4
 
 - **The filter reset now clears the filter sign.** `ResetCleanFilterTimer`

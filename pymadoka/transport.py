@@ -75,7 +75,11 @@ class Transport:
         if len(self.chunks) <= 0:
             return False
         
-        expected_size = math.ceil(self.chunks[0][1] / MAX_CHUNK_SIZE)
+        # Each chunk is its 1-byte sequence id followed by up to 19 bytes of
+        # message (split_in_chunks), so a message of N bytes spans
+        # ceil(N / 19) chunks. Dividing by MAX_CHUNK_SIZE (20) declared some
+        # lengths complete one chunk early and delivered them truncated.
+        expected_size = math.ceil(self.chunks[0][1] / (MAX_CHUNK_SIZE - 1))
        
         if len(self.chunks) != expected_size:
             return False
