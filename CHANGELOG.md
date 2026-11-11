@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.4
+
+- **The filter reset now clears the filter sign.** `ResetCleanFilterTimer`
+  sent argument 0xFE alone with command 0x4220. The BRC1H acknowledges that
+  frame and keeps the sign on its screen
+  ([daikin_madoka#74](https://github.com/dasimon135/daikin_madoka/issues/74),
+  [#148](https://github.com/dasimon135/daikin_madoka/issues/148)). The frame
+  now carries 0x51 = 1 before 0xFE = 1, byte for byte what the ESPHome
+  component of daikin_madoka sends, which clears the sign on the same
+  thermostats. Not yet confirmed from this library on a thermostat showing the
+  sign. Version 0.4.3 is reserved for the pending pairing change (#16).
+
 ## v0.4.2
 
 - **A negative outdoor temperature is no longer read as 128 or more.** The
