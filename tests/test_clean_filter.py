@@ -1,7 +1,7 @@
 """Unit tests for the clean filter reset frame.
 
-The BRC1H keeps its filter sign on until it receives argument 0x51 with the
-reset command 0x4220; 0xFE alone only restarts the timer. The ESPHome
+The BRC1H keeps its filter sign on when the reset command 0x4220 carries
+argument 0xFE alone. The ESPHome
 component of daikin_madoka sends both (madoka_base.cpp, reset_filter) and
 clears the sign on the same thermostats where this library's 0xFE-only frame
 did not (daikin_madoka#148, #74).

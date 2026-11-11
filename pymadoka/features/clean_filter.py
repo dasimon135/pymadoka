@@ -11,9 +11,8 @@ class ResetCleanFilterTimerStatus(FeatureStatus):
     This class is used to store the parameters used to reset the Clean Filter Indicator.
 
     The frame carries two arguments, as the ESPHome component of daikin_madoka
-    sends them (madoka_base.cpp, reset_filter): 0x51 clears the filter sign,
-    0xFE restarts the filter timer. With 0xFE alone the thermostat acknowledges
-    the command and keeps its sign on (daikin_madoka#148, #74).
+    sends them (madoka_base.cpp, reset_filter). With 0xFE alone the thermostat
+    acknowledges the command and keeps its sign on (daikin_madoka#148, #74).
     """
     CLEAN_FILTER_SIGN_RESET_IDX = 0x51
     CLEAN_FILTER_TIMER_RESET_IDX = 0xFE
