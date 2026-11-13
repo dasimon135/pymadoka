@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.5
+
+- **A replaced connection can no longer corrupt the answers of the current
+  one.** Every client a `Connection` opened was subscribed with the same
+  callback, so a client that had been replaced but was still subscribed kept
+  feeding the transport. On a local BlueZ adapter one thermostat delivered
+  every notification five times
+  ([daikin_madoka#149](https://github.com/dasimon135/daikin_madoka/issues/149)).
+  A repeated chunk reads as the start of a new message, so every multi-chunk
+  answer was discarded and its query cancelled as "connection lost": the
+  setpoint stayed unread, and Home Assistant refused to write one. Each
+  subscription is now bound to its own client, and only the current client
+  reaches the transport. A warning is logged once per connection when a
+  replaced client is heard.
+- **A client that is still connected is closed before another one is opened.**
+  Reconnecting while the previous client still held the link left two
+  subscriptions on the same thermostat. Why that client was still up on the
+  reporter's installation is not established; the log line added here
+  ("the previous connection is still connected") will say whether this is the
+  path that produced the duplicates.
+
 ## v0.4.4
 
 - **The filter reset now clears the filter sign.** `ResetCleanFilterTimer`
