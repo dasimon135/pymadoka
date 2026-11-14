@@ -224,6 +224,9 @@ class Connection(TransportDelegate):
         # Fire-and-forget cleanup tasks: keep a reference so they cannot be
         # garbage-collected mid-flight.
         self._bg_tasks: set = set()
+        # Whether the current connection already said that a replaced client
+        # is still relaying notifications; see _notification_handler_for.
+        self._stale_client_reported = False
 
     @property
     def pairing_timeout_rounds(self) -> int:
@@ -458,6 +461,8 @@ class Connection(TransportDelegate):
             self.connection_status = ConnectionStatus.ABORTED
             raise self.last_error
 
+        await self._close_previous_client()
+
         tried_sources = []
         self._last_round_evidence = {}
         # Per-path verdict for THIS round, aligned with tried_sources:
@@ -538,7 +543,8 @@ class Connection(TransportDelegate):
                     # round-tripping through error text.
                     pair_timed_out = True
                     raise
-                await client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
+                await client.start_notify(
+                    NOTIFY_CHAR_UUID, self._notification_handler_for(client))
                 # Let the fresh bond and notification subscription settle
                 # before the first command; proxied notifications can
                 # otherwise be dropped and the chunked response fails to
@@ -551,6 +557,7 @@ class Connection(TransportDelegate):
                     raise ConnectionException(
                         f"{self.address} dropped the link right after connecting")
                 self.client = client
+                self._stale_client_reported = False
                 self._paired = True
                 # The path HA actually used, which is not necessarily the
                 # candidate we offered (see connected_path_source). Everything
@@ -805,7 +812,8 @@ class Connection(TransportDelegate):
                     # later GATT exchange will be silently ignored.
                     logger.warning(pairing_failure_message(self.address, pair_err))
 
-            await self.client.start_notify(NOTIFY_CHAR_UUID, self.notification_handler)
+            await self.client.start_notify(
+                NOTIFY_CHAR_UUID, self._notification_handler_for(self.client))
 
             if just_paired:
                 # Let the fresh bond and notification subscription settle
@@ -866,7 +874,7 @@ class Connection(TransportDelegate):
                 logger.info(f"Connected to {self.address}")
                 self.connection_status = ConnectionStatus.CONNECTED
                 await self.client.start_notify(
-                    NOTIFY_CHAR_UUID, self.notification_handler,
+                    NOTIFY_CHAR_UUID, self._notification_handler_for(self.client),
                 )
             else:
                 logger.warning(f"Failed to connect to {self.address}")
@@ -887,6 +895,49 @@ class Connection(TransportDelegate):
 
     def notification_handler(self, sender: str, data: bytearray):
         self.transport.rebuild_chunk(data)
+
+    def _notification_handler_for(self, client):
+        """A notification callback that only speaks for `client`.
+
+        Every client this Connection opens feeds the same Transport, and a
+        client that has been replaced can stay subscribed: on a local BlueZ
+        adapter one thermostat delivered every notification five times
+        (daikin_madoka#149). A repeated chunk reads as the start of a new
+        message, so the chunks collected so far were discarded and the waiting
+        query cancelled as "connection lost" - on every multi-chunk answer,
+        which is why only the setpoint was unreadable there.
+
+        Bound to the client it was subscribed on, the callback can tell: only
+        the current client reaches the Transport.
+        """
+        def handle(sender, data):
+            if client is not self.client:
+                if not self._stale_client_reported:
+                    self._stale_client_reported = True
+                    logger.warning(
+                        f"{self.address}: a replaced connection is still "
+                        "relaying notifications; ignoring them")
+                return
+            self.notification_handler(sender, data)
+        return handle
+
+    async def _close_previous_client(self) -> None:
+        """Never open a second client while the first still holds the link.
+
+        A client that still reports itself connected when a new connect starts
+        is a link this Connection lost track of. Opening another client next
+        to it leaves two subscriptions on the same thermostat. Detached first,
+        so its disconnect callback cannot be taken for the new link dropping.
+        A client that is already disconnected is left alone.
+        """
+        previous = self.client
+        if previous is None or not previous.is_connected:
+            return
+        logger.info(
+            f"{self.address}: the previous connection is still connected; "
+            "closing it before reconnecting")
+        self.client = None
+        await self._disconnect_client(previous)
 
     def cmd_id_to_bytes(self, cmd_id: int):
         return bytearray([0x00]) + cmd_id.to_bytes(2, "big")
