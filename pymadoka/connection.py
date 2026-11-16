@@ -22,6 +22,19 @@ logger = logging.getLogger(__name__)
 # connection usable (lets the fresh bond and subscription settle).
 SETTLE_DELAY = 1.5
 
+# BlueZ-only notification mode, ignored by every other backend (the ESPHome
+# proxy client takes **kwargs and never reads it). bleak defaults to
+# StartNotify, where every client's session makes BlueZ emit its own
+# PropertiesChanged signal, and bleak's manager hands each one to the
+# current client's callback by characteristic path alone. A replaced client
+# whose session BlueZ still holds therefore doubles every notification on the
+# current one, out of reach of the per-client filter. AcquireNotify gives
+# each client its own file descriptor instead. The BRC1H notify
+# characteristic (2141e111) exposes NotifyAcquired, so bleak can use it.
+# Measured on a local adapter in daikin_madoka#149: 14 notifications on the
+# radio, 28 PropertiesChanged on D-Bus with StartNotify, 14 with this.
+NOTIFY_ARGS = {"bluez": {"use_start_notify": False}}
+
 # Consecutive rounds in which EVERY candidate path timed out while pairing
 # before we conclude the bond is really missing. A timeout is ambiguous: it
 # also happens when an existing bond's SMP encryption is merely slow (several
@@ -544,7 +557,8 @@ class Connection(TransportDelegate):
                     pair_timed_out = True
                     raise
                 await client.start_notify(
-                    NOTIFY_CHAR_UUID, self._notification_handler_for(client))
+                    NOTIFY_CHAR_UUID, self._notification_handler_for(client),
+                    **NOTIFY_ARGS)
                 # Let the fresh bond and notification subscription settle
                 # before the first command; proxied notifications can
                 # otherwise be dropped and the chunked response fails to
@@ -813,7 +827,8 @@ class Connection(TransportDelegate):
                     logger.warning(pairing_failure_message(self.address, pair_err))
 
             await self.client.start_notify(
-                NOTIFY_CHAR_UUID, self._notification_handler_for(self.client))
+                NOTIFY_CHAR_UUID, self._notification_handler_for(self.client),
+                **NOTIFY_ARGS)
 
             if just_paired:
                 # Let the fresh bond and notification subscription settle
@@ -875,6 +890,7 @@ class Connection(TransportDelegate):
                 self.connection_status = ConnectionStatus.CONNECTED
                 await self.client.start_notify(
                     NOTIFY_CHAR_UUID, self._notification_handler_for(self.client),
+                    **NOTIFY_ARGS,
                 )
             else:
                 logger.warning(f"Failed to connect to {self.address}")

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.6
+
+- **Notifications are no longer doubled by BlueZ after a reconnect.** v0.4.5
+  did not fix [daikin_madoka#149](https://github.com/dasimon135/daikin_madoka/issues/149):
+  the duplicates did not come from a replaced client's callback but from
+  BlueZ itself. With bleak's default `StartNotify`, every notify session on
+  the characteristic makes BlueZ emit its own `PropertiesChanged` signal, and
+  bleak delivers each of them to the current client, so the per-client filter
+  of v0.4.5 never saw them. @ismaelibanez480 measured it on a local adapter:
+  14 notifications on the radio, 28 signals on D-Bus. The library now
+  subscribes with `AcquireNotify` (`bluez={"use_start_notify": False}`), which
+  gives each client its own file descriptor; on that setup two forced
+  reconnects in a row gave 14 answers for 14 notifications and the setpoint
+  was read on every poll. The option is BlueZ-only: through an ESPHome proxy
+  nothing changes. Requires bleak 2.1 or later, where that option exists.
+
 ## v0.4.5
 
 - **A replaced connection can no longer corrupt the answers of the current
