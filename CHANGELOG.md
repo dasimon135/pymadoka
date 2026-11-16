@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.0
+
+- **The indoor unit status can be read: defrost / hot start, error, warning,
+  alarm and the current error code.** A new `UnitStatus` feature, owned by the
+  controller for thermostats only, asks function `0x0100` for arguments `0x41`
+  (bit 2: defrost or hot start), `0x50` (bits 0, 1, 2: error, warning, alarm)
+  and `0x90` (the code the thermostat shows, such as `U4-01`). Requested in
+  [daikin_madoka#159](https://github.com/dasimon135/daikin_madoka/issues/159)
+  to start underfloor heating while a ducted unit defrosts. The bit layout
+  comes from the MIT-licensed
+  [isakLevinson/madoka](https://github.com/isakLevinson/madoka) integration,
+  whose defrost flag the reporter has used on a BRC1H with an FBA100A.
+
+  It is a separate query from `CleanFilterIndicator`, which keeps the exact
+  frame it has always sent for argument `0x62`. An argument the thermostat
+  leaves out of its answer reads as `None`, never as "all clear". A VAM is not
+  asked: nobody has seen one answer it, and an unanswered query would cost two
+  10 s timeouts on every poll.
+
 ## v0.4.6
 
 - **Notifications are no longer doubled by BlueZ after a reconnect.** v0.4.5
