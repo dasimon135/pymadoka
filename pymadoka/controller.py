@@ -19,6 +19,7 @@ from pymadoka.features.temperatures import Temperatures
 from pymadoka.features.clean_filter import CleanFilterIndicator,ResetCleanFilterTimer
 from pymadoka.features.eye_brightness import EyeBrightness
 from pymadoka.features.ventilation import Ventilation
+from pymadoka.features.unit_status import UnitStatus
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class Controller:
         set_point (Feature): Feature used to control the fan speed
         set_point (Feature): Feature used to control the fan speed
         clean_filter_indicator (Feature): Feature used to control the fan speed
+        unit_status (Feature): Defrost / hot start and error conditions (thermostat only)
     """
     def __init__(self, address: str, adapter: str = "hci0", reconnect: bool = True, hass=None, name: str = None, candidates_callback=None, pair_timeout: float = DEFAULT_PAIR_TIMEOUT, allowed_sources_callback=None, device_type: str = DEVICE_TYPE_THERMOSTAT):
         """Inits the controller with the device address.
@@ -101,6 +103,10 @@ class Controller:
             self.ventilation = Ventilation(self.connection)
         else:
             self.fan_speed = FanSpeed(self.connection)
+            # Defrost / hot start and the error conditions (0x0100, arguments
+            # 0x41, 0x50, 0x90). Not asked of a VAM: nobody has seen one answer
+            # it, and an unanswered query costs two 10 s timeouts per poll.
+            self.unit_status = UnitStatus(self.connection)
 
         self.operation_mode = OperationMode(self.connection)
         self.power_state = PowerState(self.connection)
