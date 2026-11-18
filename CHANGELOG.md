@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.1
+
+- **The error code no longer reports a fault that is long gone.** Argument
+  `0x90` holds the last code the system recorded, not a fault in progress:
+  four healthy BRC1H, with the error, warning and alarm flags of `0x50` all
+  clear, answered `U0-00` and `A5-00`. `UnitStatusStatus.error_code` now
+  carries the code only while one of those flags is set, and is `None`
+  otherwise. The recorded code stays available as the new `last_error_code`.
+
 ## v0.5.0
 
 - **The indoor unit status can be read: defrost / hot start, error, warning,
