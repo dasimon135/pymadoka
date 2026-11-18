@@ -11,8 +11,10 @@ own query so the filter sign keeps the exact frame it has always used:
   operation and bit 3 duty rotation are not exposed.
 - 0x50, one byte of bit flags: bit 0 error, bit 1 warning, bit 2 alarm.
 - 0x90, four bytes: unit number, two ASCII characters and a number, shown on
-  the thermostat as "U4-01". Two zero characters, or no argument, mean no
-  error.
+  the thermostat as "U4-01". It holds the LAST code the system recorded, not
+  a fault in progress: four healthy BRC1H with all three 0x50 flags clear
+  answered "U0-00" and "A5-00". So error_code only carries it while one of
+  the 0x50 flags is set; last_error_code always does.
 
 Layout from the MIT-licensed isakLevinson/madoka integration (decoder.py,
 NOTIFICATION_BITS); its defrost flag was confirmed on a BRC1H with a ducted
@@ -36,7 +38,10 @@ class UnitStatusStatus(FeatureStatus):
         error (Optional[bool]): True while the unit reports an error
         warning (Optional[bool]): True while the unit reports a warning
         alarm (Optional[bool]): True while the unit reports an alarm
-        error_code (Optional[str]): Current error code, e.g. "U4-01", or None
+        error_code (Optional[str]): Code of the error, warning or alarm in
+            progress, e.g. "U4-01"; None while no 0x50 flag is set
+        last_error_code (Optional[str]): Last code the system recorded, even
+            if long cleared
     """
 
     SPECIAL_IDX = 0x41
@@ -54,6 +59,7 @@ class UnitStatusStatus(FeatureStatus):
         self.warning: Optional[bool] = None
         self.alarm: Optional[bool] = None
         self.error_code: Optional[str] = None
+        self.last_error_code: Optional[str] = None
 
     @staticmethod
     def _flags(value: Optional[bytes]) -> Optional[int]:
@@ -82,7 +88,13 @@ class UnitStatusStatus(FeatureStatus):
             self.alarm = bool(errors & (1 << self.ALARM_BIT))
 
         if self.ERROR_CODE_IDX in values:
-            self.error_code = self._error_code(bytes(values[self.ERROR_CODE_IDX]))
+            self.last_error_code = self._error_code(
+                bytes(values[self.ERROR_CODE_IDX])
+            )
+        # 0x90 keeps the last recorded code after the fault clears; only show
+        # it as current while the thermostat flags something.
+        active = self.error or self.warning or self.alarm
+        self.error_code = self.last_error_code if active else None
 
     def get_values(self) -> Dict[int, bytearray]:
         """See base class."""

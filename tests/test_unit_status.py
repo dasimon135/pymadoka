@@ -57,13 +57,32 @@ def test_error_warning_and_alarm_are_bits_0_1_2_of_argument_0x50():
 
 
 def test_the_error_code_reads_as_the_thermostat_shows_it():
-    assert parsed((0x90, bytes([0x01, ord("U"), ord("4"), 1]))).error_code == "U4-01"
-    assert parsed((0x90, bytes([0x00, ord("A"), ord("6"), 0]))).error_code == "A6-00"
+    status = parsed((0x50, b"\x01"), (0x90, bytes([0x01, ord("U"), ord("4"), 1])))
+    assert status.error_code == "U4-01"
+    status = parsed((0x50, b"\x02"), (0x90, bytes([0x00, ord("A"), ord("6"), 0])))
+    assert status.error_code == "A6-00"
+
+
+def test_a_recorded_code_with_no_flag_set_is_not_a_current_error():
+    # What four healthy BRC1H answered: all 0x50 flags clear, yet 0x90 still
+    # holds the last recorded code.
+    status = parsed((0x50, b"\x00"), (0x90, bytes([0x00, ord("U"), ord("0"), 0])))
+
+    assert (status.error, status.warning, status.alarm) == (False, False, False)
+    assert status.error_code is None
+    assert status.last_error_code == "U0-00"
+
+
+def test_no_flags_reported_means_no_current_code():
+    status = parsed((0x90, bytes([0x00, ord("A"), ord("5"), 0])))
+
+    assert status.error_code is None
+    assert status.last_error_code == "A5-00"
 
 
 def test_an_empty_or_short_error_code_is_no_error():
-    assert parsed((0x90, b"")).error_code is None
-    assert parsed((0x90, b"\x00\x00")).error_code is None
+    assert parsed((0x50, b"\x01"), (0x90, b"")).error_code is None
+    assert parsed((0x50, b"\x01"), (0x90, b"\x00\x00")).last_error_code is None
 
 
 def test_an_argument_left_out_reads_as_unknown_not_as_clear():
