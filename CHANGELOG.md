@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.0
+
+- **The thermistor temperatures of the Unit status screen can be read.** A
+  new `UnitThermistors` feature plays the sequence of the Madoka Assistant
+  app: function `0x4111` starts thermistor monitoring, function `0x0111`
+  returns the indoor page then the outdoor page, and `0x4111` stops it. Each
+  page is asked again every 0.6 s while it still answers "acquiring" (length
+  `0xFF`), at most six times. `UnitThermistorsStatus` carries indoor suction
+  air, liquid pipe and gas pipe, and outdoor air, outdoor heat exchanger and
+  compressor discharge, in whole degrees Celsius, `None` when the sensor is
+  not fitted.
+- `Controller` does not hold this feature: one read is about ten round trips,
+  too many for every poll. The caller creates it and decides how often to run
+  it.
+- The sequence and its decoding come from an HCI capture of the app by the
+  reporter of
+  [daikin_madoka#162](https://github.com/dasimon135/daikin_madoka/issues/162),
+  on a BRC1H with a ducted FBA100A, replayed from an ESP32. Not yet checked on
+  other indoor units.
+
 ## v0.5.1
 
 - **The error code no longer reports a fault that is long gone.** Argument
