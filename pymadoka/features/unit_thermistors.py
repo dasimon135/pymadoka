@@ -16,8 +16,13 @@ unit acquires the readings; the app asks again every 0.5 to 0.7 s and the
 values arrive on the third or fourth answer. The outdoor page answers empty
 while the indoor one is still pending, so it is only asked afterwards.
 
-Arguments 0x4A, 0x4B, 0x4C are 2-byte big-endian signed whole degrees
-Celsius, FF FF when the sensor is not fitted:
+Arguments 0x4A, 0x4B, 0x4C are 2-byte big-endian whole degrees Celsius,
+FF FF when the sensor is not fitted. Bit 14 is a flag of unknown meaning,
+not part of the reading: the #162 reporter saw 0x4006, 0x4002, 0x4000 and
+0x400C on liquid pipe and outdoor heat exchanger, outside any defrost, and
+each matched the reads around it once the bit was cleared. It is only
+cleared when bit 15 is 0: below zero the encoding is not confirmed yet, and
+a two's complement value such as FF FB (-5) has bit 14 set as well.
 
     0x4A  indoor Th1 suction air       outdoor Th1 outdoor air
     0x4B  indoor Th2 liquid pipe       outdoor Th2 heat exchanger
@@ -44,6 +49,7 @@ INDOOR_IDS: Sequence[int] = tuple(range(0x40, 0x50))
 OUTDOOR_IDS: Sequence[int] = (0x40, 0x41, 0x43, 0x44, 0x45, 0x46, 0x4A, 0x4B, 0x4C)
 TH1, TH2, TH3 = 0x4A, 0x4B, 0x4C
 PENDING_SIZE = 0xFF
+FLAG_BIT = 0x4000
 MAX_PAGE_ANSWERS = 6
 PAGE_RETRY_DELAY = 0.6
 
@@ -96,7 +102,11 @@ class _PageStatus(FeatureStatus):
         value = self.values.get(arg_id)
         if value is None or len(value) != 2 or value == b"\xff\xff":
             return None
-        return int.from_bytes(value, "big", signed=True)
+        raw = int.from_bytes(value, "big")
+        if raw & 0x8000:
+            # Assumed two's complement; not yet seen on a real unit.
+            return raw - 0x10000
+        return raw & ~FLAG_BIT
 
 
 class _MonitorStatus(FeatureStatus):

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.1
+
+- **A thermistor no longer reads 16384 degrees or more.** Bit 14 of a reading
+  is a flag, not part of the temperature: over three days, the reporter of
+  [daikin_madoka#162](https://github.com/dasimon135/daikin_madoka/issues/162)
+  got `0x4006`, `0x4002`, `0x4000` and `0x400C` on the liquid pipe and the
+  outdoor heat exchanger, none during a defrost, and each matched the reads
+  around it once the bit was cleared. `UnitThermistorsStatus` now clears it.
+  Its meaning is unknown, and it is only cleared on readings above zero:
+  below zero the encoding is still assumed to be two's complement, which has
+  bit 14 set too, until a real negative reading confirms it.
+
 ## v0.6.0
 
 - **The thermistor temperatures of the Unit status screen can be read.** A

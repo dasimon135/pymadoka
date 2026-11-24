@@ -87,6 +87,18 @@ def test_ffff_means_not_fitted():
     assert parsed(INDOOR_VALUES).temperature(0x4D) is None
 
 
+def test_bit_14_is_a_flag_not_part_of_the_temperature():
+    """Four reads on the #162 reporter's unit over three days, none during a
+    defrost; with bit 14 cleared each one matched the reads around it."""
+    for raw, degrees in (
+        (b"\x40\x06", 6),
+        (b"\x40\x02", 2),
+        (b"\x40\x00", 0),
+        (b"\x40\x0c", 12),
+    ):
+        assert parsed(page(0, {0x4B: raw})).temperature(0x4B) == degrees
+
+
 def test_an_empty_page_is_not_pending_and_has_no_values():
     status = parsed(page(1, {i: b"" for i in OUTDOOR_IDS}))
     assert status.pending is False
